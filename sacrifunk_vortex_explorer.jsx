@@ -1,0 +1,365 @@
+import { useState, useEffect, useCallback, useMemo } from "react";
+
+const COLORS = {
+  bg: "#0a0a0f",
+  circle: "#1a1a2e",
+  circleStroke: "#2a2a4a",
+  loopRed: ["#ff3355", "#cc2244", "#992244", "#882255", "#771166"],
+  feederGreen: "#22cc66",
+  feederGreenDim: "#1a9950",
+  axisGold: "#ffd700",
+  text: "#e8e8f0",
+  textDim: "#8888aa",
+  accent: "#ff3355",
+  panel: "#12121e",
+  panelBorder: "#222244",
+  nodeDefault: "#3a3a5a",
+  nodeActive: "#ff3355",
+};
+
+function computeVortex(N, multiplier) {
+  if (N < 1) return { cycles: [], feeders: [], mapping: {}, axis: null };
+  const modN = (x) => { const r = x % N; return r === 0 ? N : r; };
+  const mapping = {};
+  for (let k = 1; k <= N; k++) mapping[k] = modN(k * multiplier);
+
+  const visited = new Set();
+  const inCycle = new Set();
+  const cycles = [];
+
+  for (let start = 1; start <= N; start++) {
+    if (visited.has(start)) continue;
+    const path = [];
+    const pathSet = new Set();
+    let current = start;
+    while (!visited.has(current) && !pathSet.has(current)) {
+      path.push(current);
+      pathSet.add(current);
+      current = mapping[current];
+    }
+    if (pathSet.has(current)) {
+      const idx = path.indexOf(current);
+      const cycle = path.slice(idx);
+      cycle.forEach((n) => inCycle.add(n));
+      cycles.push(cycle);
+    }
+    path.forEach((n) => visited.add(n));
+  }
+
+  const feederNodes = [];
+  for (let k = 1; k <= N; k++) if (!inCycle.has(k)) feederNodes.push(k);
+
+  // Build feeder chains
+  const feederChains = [];
+  const feederUsed = new Set();
+  for (const fn of feederNodes) {
+    if (feederUsed.has(fn)) continue;
+    const chain = [fn];
+    feederUsed.add(fn);
+    let cur = mapping[fn];
+    while (!inCycle.has(cur) && !feederUsed.has(cur)) {
+      chain.push(cur);
+      feederUsed.add(cur);
+      cur = mapping[cur];
+    }
+    chain.push(cur); // endpoint (cycle node)
+    feederChains.push(chain);
+  }
+
+  const axis = modN(N); // the "magic number"
+  return { cycles, feederChains, feederNodes, mapping, axis, N };
+}
+
+function getNodePos(index, total, cx, cy, r) {
+  const angle = -Math.PI / 2 + (2 * Math.PI * (index - 1)) / total;
+  return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+}
+
+function VortexDiagram({ N, multiplier, size = 400 }) {
+  const data = useMemo(() => computeVortex(N, multiplier), [N, multiplier]);
+  const cx = size / 2, cy = size / 2, r = size * 0.38;
+  const nodeR = Math.max(6, Math.min(16, 200 / N));
+
+  const positions = useMemo(() => {
+    const pos = {};
+    for (let i = 1; i <= N; i++) pos[i] = getNodePos(i, N, cx, cy, r);
+    return pos;
+  }, [N, cx, cy, r]);
+
+  const inCycle = new Set();
+  data.cycles.forEach((c) => c.forEach((n) => inCycle.add(n)));
+
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} style={{ width: "100%", maxWidth: size }}>
+      <defs>
+        <radialGradient id="bgGrad">
+          <stop offset="0%" stopColor="#1a1a30" />
+          <stop offset="100%" stopColor="#0a0a14" />
+        </radialGradient>
+        <filter id="glow">
+          <feGaussianBlur stdDeviation="2" result="blur" />
+          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+      </defs>
+
+      <circle cx={cx} cy={cy} r={r + 20} fill="url(#bgGrad)" />
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke={COLORS.circleStroke} strokeWidth="1" opacity="0.5" />
+
+      {/* Feeder lines (green) */}
+      {data.feederChains && data.feederChains.map((chain, ci) =>
+        chain.slice(0, -1).map((node, i) => {
+          const next = chain[i + 1];
+          const p1 = positions[node], p2 = positions[next];
+          if (!p1 || !p2) return null;
+          return (
+            <line key={`f-${ci}-${i}`} x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
+              stroke={COLORS.feederGreen} strokeWidth="1.2" opacity="0.6" />
+          );
+        })
+      )}
+
+      {/* Cycle lines (red) */}
+      {data.cycles.map((cycle, ci) => {
+        const color = COLORS.loopRed[ci % COLORS.loopRed.length];
+        return cycle.map((node, i) => {
+          const next = cycle[(i + 1) % cycle.length];
+          const p1 = positions[node], p2 = positions[next];
+          if (!p1 || !p2) return null;
+          return (
+            <line key={`c-${ci}-${i}`} x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
+              stroke={color} strokeWidth="1.8" opacity="0.85" filter="url(#glow)" />
+          );
+        });
+      })}
+
+      {/* Nodes */}
+      {Array.from({ length: N }, (_, i) => i + 1).map((n) => {
+        const pos = positions[n];
+        if (!pos) return null;
+        const isCycleNode = inCycle.has(n);
+        const isAxis = n === data.axis;
+        const fill = isAxis ? COLORS.axisGold : isCycleNode ? COLORS.accent : COLORS.feederGreenDim;
+        return (
+          <g key={`n-${n}`}>
+            <circle cx={pos.x} cy={pos.y} r={nodeR} fill={fill}
+              stroke={isAxis ? "#fff" : "none"} strokeWidth={isAxis ? 1.5 : 0} opacity="0.9" />
+            {N <= 36 && (
+              <text x={pos.x} y={pos.y} textAnchor="middle" dominantBaseline="central"
+                fill={isAxis ? "#000" : "#fff"} fontSize={Math.max(8, nodeR * 0.9)} fontWeight="bold"
+                fontFamily="'JetBrains Mono', monospace">
+                {n}
+              </text>
+            )}
+          </g>
+        );
+      })}
+
+      {/* Top marker */}
+      <circle cx={cx} cy={cy - r - 8} r="3" fill={COLORS.textDim} opacity="0.5" />
+    </svg>
+  );
+}
+
+function InfoPanel({ N, multiplier }) {
+  const data = useMemo(() => computeVortex(N, multiplier), [N, multiplier]);
+
+  // Factor N = 2^k * m
+  let k = 0, m = N;
+  while (m % 2 === 0) { k++; m = Math.floor(m / 2); }
+
+  // Digital root class
+  const dr = N % 9 === 0 ? 9 : N % 9;
+
+  const totalLoopNodes = data.cycles.reduce((s, c) => s + c.length, 0);
+  const totalFeeders = N - totalLoopNodes;
+
+  // JI note mapping (only for N=9)
+  const jiNotes9 = { 1: "C/E", 2: "C/E", 3: "G/B", 4: "C/E", 5: "C/E", 6: "G/B", 7: "C/E", 8: "C/E", 9: "D/F#" };
+
+  return (
+    <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`,
+      borderRadius: 12, padding: "16px 20px", fontFamily: "'JetBrains Mono', monospace", color: COLORS.text }}>
+      <div style={{ fontSize: 24, fontWeight: "bold", color: COLORS.accent, marginBottom: 4 }}>
+        {N} ×{multiplier} L{data.cycles.length} F{totalFeeders}
+      </div>
+      <div style={{ fontSize: 12, color: COLORS.textDim, marginBottom: 12 }}>
+        Vortex-{N} | {k > 0 ? `2${String.fromCodePoint(0x2070 + k > 9 ? 0x2070 : 0x2070 + k)}` : ""}
+        {k > 0 ? `·${m}` : `${N} (odd)`} | Class(9) = {dr}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+        <div style={{ background: "#1a0a0a", borderRadius: 8, padding: "8px 12px", border: "1px solid #331122" }}>
+          <div style={{ fontSize: 10, color: COLORS.loopRed[0], textTransform: "uppercase", letterSpacing: 1 }}>Loops</div>
+          <div style={{ fontSize: 28, fontWeight: "bold", color: COLORS.loopRed[0] }}>{data.cycles.length}</div>
+        </div>
+        <div style={{ background: "#0a1a0a", borderRadius: 8, padding: "8px 12px", border: "1px solid #113322" }}>
+          <div style={{ fontSize: 10, color: COLORS.feederGreen, textTransform: "uppercase", letterSpacing: 1 }}>Feeders</div>
+          <div style={{ fontSize: 28, fontWeight: "bold", color: COLORS.feederGreen }}>{totalFeeders}</div>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 11, lineHeight: 1.6 }}>
+        {data.cycles.map((cyc, i) => (
+          <div key={i} style={{ color: COLORS.loopRed[i % COLORS.loopRed.length], marginBottom: 4 }}>
+            <span style={{ opacity: 0.6 }}>Loop {i + 1} (len {cyc.length}):</span>{" "}
+            {cyc.join(" → ")} → {cyc[0]}
+          </div>
+        ))}
+      </div>
+
+      {k === 0 && totalFeeders === 0 && (
+        <div style={{ marginTop: 10, padding: "6px 10px", background: "#1a1a0a",
+          border: "1px solid #333311", borderRadius: 6, fontSize: 11, color: COLORS.axisGold }}>
+          Odd N → Pure loop system (closed/resonant)
+        </div>
+      )}
+      {k > 0 && totalFeeders > 0 && (
+        <div style={{ marginTop: 10, padding: "6px 10px", background: "#0a1a0a",
+          border: "1px solid #113322", borderRadius: 6, fontSize: 11, color: COLORS.feederGreen }}>
+          2-adic law: k={k} → {totalFeeders} feeder nodes ({Math.round(100 * totalFeeders / N)}% open)
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function SacrifunkVortexExplorer() {
+  const [N, setN] = useState(9);
+  const [mult, setMult] = useState(2);
+  const [autoPlay, setAutoPlay] = useState(false);
+
+  useEffect(() => {
+    if (!autoPlay) return;
+    const timer = setInterval(() => {
+      setN((prev) => (prev >= 82 ? 1 : prev + 1));
+    }, 800);
+    return () => clearInterval(timer);
+  }, [autoPlay]);
+
+  return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, color: COLORS.text,
+      fontFamily: "'JetBrains Mono', 'Fira Code', monospace", padding: "20px 16px" }}>
+
+      <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+
+      {/* Header */}
+      <div style={{ textAlign: "center", marginBottom: 20 }}>
+        <h1 style={{ fontSize: 28, fontWeight: 700, color: COLORS.accent, margin: 0,
+          letterSpacing: 2, textTransform: "uppercase" }}>
+          Sacrifunk Vortex Explorer
+        </h1>
+        <p style={{ fontSize: 12, color: COLORS.textDim, margin: "4px 0 0" }}>
+          9-Number System · Modular Multiplication Graphs · No Zero
+        </p>
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: "flex", gap: 12, justifyContent: "center", alignItems: "center",
+        flexWrap: "wrap", marginBottom: 20 }}>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button onClick={() => setN(Math.max(1, N - 1))}
+            style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`,
+              color: COLORS.text, padding: "8px 14px", borderRadius: 6, cursor: "pointer", fontSize: 16 }}>
+            ‹
+          </button>
+          <input type="number" value={N} min={1} max={500}
+            onChange={(e) => setN(Math.max(1, parseInt(e.target.value) || 1))}
+            style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`,
+              color: COLORS.accent, width: 70, padding: "8px 12px", borderRadius: 6,
+              fontSize: 18, fontWeight: "bold", textAlign: "center",
+              fontFamily: "'JetBrains Mono', monospace" }} />
+          <button onClick={() => setN(N + 1)}
+            style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`,
+              color: COLORS.text, padding: "8px 14px", borderRadius: 6, cursor: "pointer", fontSize: 16 }}>
+            ›
+          </button>
+        </div>
+
+        <select value={mult} onChange={(e) => setMult(parseInt(e.target.value))}
+          style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`,
+            color: COLORS.text, padding: "8px 12px", borderRadius: 6, fontSize: 14,
+            fontFamily: "'JetBrains Mono', monospace" }}>
+          {[2, 3, 4, 5, 6, 7, 8].map((m) => (
+            <option key={m} value={m}>×{m}</option>
+          ))}
+        </select>
+
+        <button onClick={() => setAutoPlay(!autoPlay)}
+          style={{ background: autoPlay ? COLORS.accent : COLORS.panel,
+            border: `1px solid ${autoPlay ? COLORS.accent : COLORS.panelBorder}`,
+            color: autoPlay ? "#fff" : COLORS.text, padding: "8px 16px", borderRadius: 6,
+            cursor: "pointer", fontSize: 12, fontWeight: "bold", letterSpacing: 1 }}>
+          {autoPlay ? "■ STOP" : "▶ AUTO"}
+        </button>
+
+        {/* Quick jumps */}
+        <div style={{ display: "flex", gap: 4 }}>
+          {[9, 12, 27, 32, 63, 64, 81].map((q) => (
+            <button key={q} onClick={() => setN(q)}
+              style={{ background: N === q ? COLORS.accent : COLORS.panel,
+                border: `1px solid ${N === q ? COLORS.accent : COLORS.panelBorder}`,
+                color: N === q ? "#fff" : COLORS.textDim, padding: "4px 8px",
+                borderRadius: 4, cursor: "pointer", fontSize: 10 }}>
+              {q}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Main content */}
+      <div style={{ display: "flex", gap: 20, justifyContent: "center", flexWrap: "wrap",
+        maxWidth: 900, margin: "0 auto" }}>
+
+        <div style={{ flex: "1 1 400px", maxWidth: 460 }}>
+          <VortexDiagram N={N} multiplier={mult} size={440} />
+        </div>
+
+        <div style={{ flex: "1 1 300px", maxWidth: 380, display: "flex", flexDirection: "column", gap: 12 }}>
+          <InfoPanel N={N} multiplier={mult} />
+
+          {/* Legend */}
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`,
+            borderRadius: 12, padding: "12px 16px", fontSize: 11 }}>
+            <div style={{ fontWeight: "bold", fontSize: 12, marginBottom: 8, color: COLORS.textDim }}>LEGEND</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <div style={{ width: 20, height: 3, background: COLORS.loopRed[0], borderRadius: 2 }} />
+              <span>Loop (closed cycle) — red lines</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <div style={{ width: 20, height: 3, background: COLORS.feederGreen, borderRadius: 2 }} />
+              <span>Feeder (tree into cycle) — green lines</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <div style={{ width: 10, height: 10, background: COLORS.axisGold, borderRadius: "50%" }} />
+              <span>Axis / magic number (N) — gold</span>
+            </div>
+            <div style={{ marginTop: 8, color: COLORS.textDim, fontSize: 10, lineHeight: 1.5 }}>
+              Map: k ↦ (k × {mult}) mod {N}<br />
+              Ahmed convention: 0 is NOT a number,<br />
+              digits run 1...{N}, with {N} replacing 0.
+            </div>
+          </div>
+
+          {/* Three Laws */}
+          <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.panelBorder}`,
+            borderRadius: 12, padding: "12px 16px", fontSize: 10, lineHeight: 1.6 }}>
+            <div style={{ fontWeight: "bold", fontSize: 12, marginBottom: 6, color: COLORS.axisGold }}>
+              THREE LAWS (Ahmed)
+            </div>
+            <div style={{ color: COLORS.textDim }}>
+              <strong style={{ color: COLORS.loopRed[0] }}>Law 1:</strong> N = 2<sup>k</sup>·m → k drives feeders<br />
+              <strong style={{ color: COLORS.feederGreen }}>Law 2:</strong> Odd N → F=0 (pure loops)<br />
+              <strong style={{ color: COLORS.axisGold }}>Law 3:</strong> 2<sup>n</sup> → maximum feeders (feeder pole)
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{ textAlign: "center", marginTop: 24, fontSize: 10, color: COLORS.textDim }}>
+        Sacrifunk Vortex System — A cyclic, octave-based integer system where numbers behave like musical tones
+      </div>
+    </div>
+  );
+}

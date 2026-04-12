@@ -1,0 +1,445 @@
+import { useState, useMemo, useCallback } from "react";
+
+// ═══════════════════════════════════════════════════════════════
+// HARDWARE SPECS (Ahmed's actual chain)
+// ═══════════════════════════════════════════════════════════════
+const HARDWARE = {
+  rme: { name: "RME UCX II", role: "Audio Interface", outputs: "Line 3/4 → ART", range: "DC-200kHz", note: "Use outputs 3/4 for vibrotactile (keep 1/2 for monitors)" },
+  art: { name: "ART CleanBox Pro", role: "Balanced→Unbalanced", note: "Converts balanced XLR from RME to unbalanced for MiniDSP" },
+  minidsp: { name: "MiniDSP 2×4 HD", role: "Crossover + Routing", inputs: 2, outputs: 4, note: "4 independent output channels with per-channel PEQ, crossover, gain, delay" },
+  crown: { name: "Crown XLS1002", role: "Power Amp", watts: "215W/ch @ 8Ω", channels: 2, note: "Bridge mode = 350W mono. Use Ch1+Ch2 for 2 independent zones" },
+  bst1: { name: "BST-1", role: "Primary sub-bass", rms: 25, impedance: 4, range: "10-80 Hz optimal", resonance: "~40 Hz", note: "Neoprene-covered for body contact" },
+  bst300: { name: "BST-300EX", role: "Extended sub-bass", rms: 50, impedance: 4, range: "20-200 Hz", note: "Higher power, wider range" },
+  daex32: { name: "DAEX32EP-4", role: "Puck transducer", rms: 10, impedance: 4, range: "50-500 Hz", note: "Point contact, good for extremities" },
+};
+
+// ═══════════════════════════════════════════════════════════════
+// FREQUENCY DATABASE (JI 5-limit from C-doubling)
+// ═══════════════════════════════════════════════════════════════
+const JI = [1,16/15,9/8,6/5,5/4,4/3,45/32,3/2,8/5,5/3,9/5,15/8];
+const NOTES = ["C","C#","D","Eb","E","F","F#","G","Ab","A","Bb","B"];
+
+const FREQ_DB = [];
+for (let oct = 0; oct <= 6; oct++) {
+  const cBase = Math.pow(2, oct); // C=1,2,4,8,16,32,64,128,256,...
+  for (let i = 0; i < 12; i++) {
+    const freq = cBase * JI[i];
+    if (freq < 10 || freq > 500) continue;
+    const isInteger = Math.abs(freq - Math.round(freq)) < 0.01;
+    const dr = isInteger ? (Math.round(freq) % 9 === 0 ? 9 : Math.round(freq) % 9) : null;
+    const part = dr ? ([1,2,4,5,7,8].includes(dr) ? "A" : [3,6].includes(dr) ? "B" : "C") : null;
+    const hasF = i === 6; // F# = tritone
+    
+    let zone = "out-of-range";
+    if (freq >= 10 && freq <= 80) zone = "sub-bass";
+    else if (freq > 80 && freq <= 200) zone = "bass";
+    else if (freq > 200 && freq <= 500) zone = "low-mid";
+    
+    let bestTransducer = "—";
+    if (freq <= 80) bestTransducer = "BST-1";
+    else if (freq <= 200) bestTransducer = "BST-300EX";
+    else bestTransducer = "DAEX32EP-4";
+
+    FREQ_DB.push({
+      freq: Math.round(freq * 100) / 100,
+      note: NOTES[i],
+      octave: oct,
+      ratio: JI[i],
+      isInteger,
+      dr,
+      part,
+      hasF,
+      zone,
+      bestTransducer,
+      semitone: i,
+    });
+  }
+}
+FREQ_DB.sort((a, b) => a.freq - b.freq);
+
+// Roughness approximation for a set of frequencies
+function setRoughness(freqs) {
+  let total = 0;
+  for (let i = 0; i < freqs.length; i++) {
+    for (let j = i + 1; j < freqs.length; j++) {
+      for (let n = 1; n <= 8; n++) {
+        for (let m = 1; m <= 8; m++) {
+          const f1 = freqs[i] * n, f2 = freqs[j] * m;
+          const a1 = 1/n, a2 = 1/m;
+          const s = 0.24 / (0.021 * Math.min(f1, f2) + 19);
+          const x = Math.abs(f2 - f1) * s;
+          if (x > 0.001) total += a1 * a2 * (Math.exp(-3.5*x) - Math.exp(-5.75*x));
+        }
+      }
+    }
+  }
+  return total;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PRESET COMBINATIONS
+// ═══════════════════════════════════════════════════════════════
+const PRESETS = [
+  { name: "Pure Triad (C-E-G)", cat: "Cat 2 (Passive)", freqs: [32,40,48], partitions: "A+B", desc: "Zero beating. Classes 5,4,3. Smoothest sub-bass combination.", roughScore: "LOW" },
+  { name: "Pure Triad Oct2 (C-E-G)", cat: "Cat 2", freqs: [64,80,96], partitions: "A+B", desc: "Same triad, higher octave. More felt than heard.", roughScore: "LOW" },
+  { name: "Full Partition (C-D-E-G)", cat: "Cat 2", freqs: [32,36,40,48], partitions: "A+B+C", desc: "Adds D (class 9, axis). All 3 partitions covered.", roughScore: "MED" },
+  { name: "Ab Major (Ab-C-Eb)", cat: "Cat 2", freqs: [51.2,64,76.8], partitions: "A+B", desc: "SMOOTHEST chord in Sacrifunk. Zero beating. Roughness 0.197.", roughScore: "LOWEST" },
+  { name: "Ab Maj7 (Ab-C-Eb-G)", cat: "Cat 2", freqs: [51.2,64,76.8,96], partitions: "A+B", desc: "ONLY zero-beating 7th chord. Rich and pure.", roughScore: "LOW" },
+  { name: "C Minor + Shimmer", cat: "Cat 1 (Active)", freqs: [64,76.8,96,120], partitions: "A+B", desc: "C-Eb-G-B. B adds 3.2Hz shimmer as attention cue.", roughScore: "MED" },
+  { name: "Axis Ground (D-G)", cat: "Cat 2", freqs: [36,48], partitions: "B+C", desc: "Axis (D=class 9) + fifth (G=class 3). Grounding pair.", roughScore: "LOW" },
+  { name: "Power Sub (C-G)", cat: "Cat 2", freqs: [32,48], partitions: "A+B", desc: "Pure 2:3 ratio. Simplest consonance. Very stable.", roughScore: "LOWEST" },
+  { name: "Wide Spread (C₁-E₁-G₁-C₂)", cat: "Cat 2", freqs: [32,40,48,64], partitions: "A+B", desc: "Two-octave spread. Classes 5,4,3,1. Maximum body coverage.", roughScore: "LOW" },
+  { name: "Tension Build (C-F#)", cat: "Cat 1", freqs: [64,90], partitions: "A+C", desc: "Tritone. 45/32 ratio. Creates deliberate roughness for cue moments.", roughScore: "HIGH" },
+  { name: "Eastern Tension (C-C#-G)", cat: "Cat 3", freqs: [64,68.27,96], partitions: "A+B", desc: "Phrygian ♭2. Continuous phase tension for Category 3 protocols.", roughScore: "HIGH" },
+  { name: "7-Limit Triad (C-E-7Bb)", cat: "Cat 1", freqs: [32,40,56], partitions: "A+B", desc: "Uses 7th harmonic (7/4). Dark, ancient. 9-EDO native.", roughScore: "MED" },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// MINIDSP ROUTING DIAGRAM
+// ═══════════════════════════════════════════════════════════════
+function RoutingDiagram({ selectedFreqs }) {
+  const subBass = selectedFreqs.filter(f => f.freq <= 80);
+  const bass = selectedFreqs.filter(f => f.freq > 80 && f.freq <= 200);
+  const mid = selectedFreqs.filter(f => f.freq > 200);
+
+  const boxStyle = (color) => ({
+    padding: "6px 10px", borderRadius: 6, border: `1px solid ${color}40`,
+    background: `${color}10`, fontSize: 10, textAlign: "center", minWidth: 100
+  });
+
+  return (
+    <div style={{ fontSize: 10, color: "#ccc" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
+        {/* Source */}
+        <div style={boxStyle("#4488ff")}>
+          <div style={{ color: "#4488ff", fontWeight: "bold" }}>Logic Pro</div>
+          <div style={{ color: "#666", fontSize: 8 }}>Sine generators / Alchemy</div>
+        </div>
+        <div style={{ color: "#444" }}>↓</div>
+        <div style={boxStyle("#4488ff")}>
+          <div style={{ color: "#4488ff", fontWeight: "bold" }}>RME UCX II</div>
+          <div style={{ color: "#666", fontSize: 8 }}>Out 3/4 (balanced XLR)</div>
+        </div>
+        <div style={{ color: "#444" }}>↓</div>
+        <div style={boxStyle("#22cc66")}>
+          <div style={{ color: "#22cc66", fontWeight: "bold" }}>ART CleanBox Pro</div>
+          <div style={{ color: "#666", fontSize: 8 }}>Bal → Unbal</div>
+        </div>
+        <div style={{ color: "#444" }}>↓</div>
+        <div style={boxStyle("#ffd700")}>
+          <div style={{ color: "#ffd700", fontWeight: "bold" }}>MiniDSP 2×4 HD</div>
+          <div style={{ color: "#666", fontSize: 8 }}>Crossover + per-channel gain</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+          <div style={{ color: "#444" }}>↓ Out1</div>
+          <div style={{ color: "#444" }}>↓ Out2</div>
+          <div style={{ color: "#444" }}>↓ Out3</div>
+          <div style={{ color: "#444" }}>↓ Out4</div>
+        </div>
+        <div style={boxStyle("#ff3355")}>
+          <div style={{ color: "#ff3355", fontWeight: "bold" }}>Crown XLS1002</div>
+          <div style={{ color: "#666", fontSize: 8 }}>Ch1 (Out1+2) / Ch2 (Out3+4)</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+          {subBass.length > 0 && <div style={boxStyle("#ff3355")}>
+            <div style={{ fontWeight: "bold" }}>BST-1</div>
+            <div style={{ color: "#888", fontSize: 8 }}>≤80Hz: {subBass.map(f => `${f.freq}Hz`).join(", ")}</div>
+          </div>}
+          {bass.length > 0 && <div style={boxStyle("#ff8800")}>
+            <div style={{ fontWeight: "bold" }}>BST-300EX</div>
+            <div style={{ color: "#888", fontSize: 8 }}>80-200Hz: {bass.map(f => `${f.freq}Hz`).join(", ")}</div>
+          </div>}
+          {mid.length > 0 && <div style={boxStyle("#aa55ff")}>
+            <div style={{ fontWeight: "bold" }}>DAEX32EP-4</div>
+            <div style={{ color: "#888", fontSize: 8 }}>&gt;200Hz: {mid.map(f => `${f.freq}Hz`).join(", ")}</div>
+          </div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LOGIC PRO SESSION SPEC
+// ═══════════════════════════════════════════════════════════════
+function LogicSpec({ selectedFreqs, presetName }) {
+  if (selectedFreqs.length === 0) return null;
+  return (
+    <div style={{ fontSize: 10, color: "#aaa", lineHeight: 1.8 }}>
+      <div style={{ color: "#ffd700", fontWeight: "bold", marginBottom: 4 }}>Logic Pro Session Setup: {presetName}</div>
+      {selectedFreqs.map((f, i) => (
+        <div key={i}>
+          <span style={{ color: "#ff3355" }}>Track {i + 1}:</span> Software Instrument → Test Oscillator (or Alchemy sine)
+          → Freq: <b style={{ color: "#22cc66" }}>{f.freq} Hz</b>
+          → Note: {f.note} → Pan: Center → Output: Bus {i + 1}
+          → Route Bus {i + 1} → Output 3/4 (RME)
+        </div>
+      ))}
+      <div style={{ marginTop: 6, color: "#666" }}>
+        MiniDSP config: LPF at 80Hz on Out1/2 (→BST-1), HPF at 80Hz + LPF at 200Hz on Out3 (→BST-300), HPF at 200Hz on Out4 (→DAEX32)
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════
+export default function FreqDesigner() {
+  const [mode, setMode] = useState("preset"); // preset | custom
+  const [selectedPreset, setSelectedPreset] = useState(0);
+  const [customFreqs, setCustomFreqs] = useState([]);
+  const [partFilter, setPartFilter] = useState("all"); // all | A | B | C | AB | AC | BC | ABC
+  const [zoneFilter, setZoneFilter] = useState("all"); // all | sub-bass | bass | low-mid
+  const [integerOnly, setIntegerOnly] = useState(false);
+
+  const preset = PRESETS[selectedPreset];
+  const activeFreqs = useMemo(() => {
+    if (mode === "preset") {
+      return preset.freqs.map(f => FREQ_DB.find(fd => Math.abs(fd.freq - f) < 0.5) || { freq: f, note: "?", part: "?", dr: null, zone: "?", bestTransducer: "?", isInteger: false });
+    }
+    return customFreqs.map(f => FREQ_DB.find(fd => Math.abs(fd.freq - f) < 0.5) || { freq: f, note: "?", part: "?", dr: null, zone: "?", bestTransducer: "?", isInteger: false });
+  }, [mode, selectedPreset, customFreqs]);
+
+  const roughness = useMemo(() => {
+    const fs = activeFreqs.map(f => f.freq);
+    if (fs.length < 2) return 0;
+    return Math.round(setRoughness(fs) * 10000) / 10000;
+  }, [activeFreqs]);
+
+  const partsCovered = useMemo(() => {
+    const p = new Set();
+    activeFreqs.forEach(f => { if (f.part) p.add(f.part); });
+    return p;
+  }, [activeFreqs]);
+
+  const classesCovered = useMemo(() => {
+    const c = new Set();
+    activeFreqs.forEach(f => { if (f.dr) c.add(f.dr); });
+    return c;
+  }, [activeFreqs]);
+
+  // Filtered frequency database for custom mode
+  const filteredDB = useMemo(() => {
+    return FREQ_DB.filter(f => {
+      if (integerOnly && !f.isInteger) return false;
+      if (zoneFilter !== "all" && f.zone !== zoneFilter) return false;
+      if (partFilter !== "all") {
+        if (partFilter === "ABC" && (!f.part || !"ABC".includes(f.part))) return false;
+        if (partFilter !== "ABC" && f.part !== partFilter) return false;
+      }
+      return true;
+    });
+  }, [partFilter, zoneFilter, integerOnly]);
+
+  const toggleCustom = (freq) => {
+    setCustomFreqs(prev => prev.includes(freq) ? prev.filter(f => f !== freq) : [...prev, freq]);
+  };
+
+  // Audio
+  const playCombo = () => {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    activeFreqs.forEach(f => {
+      const o = ac.createOscillator(); const g = ac.createGain();
+      o.type = "sine"; o.frequency.value = f.freq;
+      g.gain.setValueAtTime(0, ac.currentTime);
+      g.gain.linearRampToValueAtTime(0.08, ac.currentTime + 0.05);
+      g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 2.5);
+      o.connect(g); g.connect(ac.destination);
+      o.start(); o.stop(ac.currentTime + 2.6);
+    });
+  };
+
+  const panel = { background: "#11111e", borderRadius: 8, padding: "10px 12px", border: "1px solid #1e1e36" };
+  const btn = (active, color) => ({ padding: "3px 10px", background: active ? (color || "#2a2a5a") : "#0a0a14", border: `1px solid ${active ? (color || "#4444aa") : "#2a2a3a"}`, color: active ? "#fff" : "#666", borderRadius: 4, cursor: "pointer", fontSize: 10, fontFamily: "inherit", fontWeight: active ? "bold" : "normal" });
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#08080e", color: "#e0e0f0", fontFamily: "'JetBrains Mono', monospace", padding: "12px 16px" }}>
+      <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+
+      <div style={{ textAlign: "center", marginBottom: 10 }}>
+        <h1 style={{ fontSize: 20, color: "#ff3355", margin: 0, letterSpacing: 2 }}>SACRIFUNK FREQUENCY DESIGNER</h1>
+        <p style={{ fontSize: 9, color: "#555", margin: "2px 0" }}>Hardware-Aware · Vortex Partition Coverage · Spectral Consonance · MiniDSP Routing · Logic Pro Ready</p>
+      </div>
+
+      <div style={{ maxWidth: 960, margin: "0 auto" }}>
+        {/* Mode toggle */}
+        <div style={{ display: "flex", gap: 4, justifyContent: "center", marginBottom: 10 }}>
+          <button onClick={() => setMode("preset")} style={btn(mode === "preset", "#ff3355")}>PRESETS</button>
+          <button onClick={() => setMode("custom")} style={btn(mode === "custom", "#4488ff")}>CUSTOM BUILD</button>
+        </div>
+
+        {mode === "preset" ? (
+          <>
+            {/* Preset selector */}
+            <div style={{ ...panel, marginBottom: 10 }}>
+              <div style={{ fontSize: 9, color: "#555", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Protocol Presets</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 4 }}>
+                {PRESETS.map((p, i) => (
+                  <div key={i} onClick={() => setSelectedPreset(i)}
+                    style={{ padding: "6px 10px", borderRadius: 6, cursor: "pointer",
+                      background: selectedPreset === i ? "#ff335520" : "#0a0a14",
+                      border: `1px solid ${selectedPreset === i ? "#ff3355" : "#1a1a2a"}` }}>
+                    <div style={{ fontSize: 11, fontWeight: "bold", color: selectedPreset === i ? "#ff3355" : "#aaa" }}>{p.name}</div>
+                    <div style={{ fontSize: 8, color: "#666" }}>{p.cat} · {p.partitions} · {p.roughScore}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Selected preset detail */}
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+              {/* Frequencies */}
+              <div style={{ flex: "1 1 280px", ...panel }}>
+                <div style={{ fontSize: 16, fontWeight: "bold", color: "#ff3355", marginBottom: 4 }}>{preset.name}</div>
+                <div style={{ fontSize: 10, color: "#888", marginBottom: 8 }}>{preset.desc}</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+                  {activeFreqs.map((f, i) => (
+                    <div key={i} style={{ padding: "6px 10px", borderRadius: 6, textAlign: "center", minWidth: 70,
+                      background: f.part === "A" ? "#ff335515" : f.part === "B" ? "#22cc6615" : f.part === "C" ? "#ffd70015" : "#1a1a2e",
+                      border: `1px solid ${f.part === "A" ? "#ff3355" : f.part === "B" ? "#22cc66" : f.part === "C" ? "#ffd700" : "#333"}` }}>
+                      <div style={{ fontSize: 16, fontWeight: "bold", color: "#fff" }}>{f.freq}</div>
+                      <div style={{ fontSize: 9, color: "#888" }}>Hz</div>
+                      <div style={{ fontSize: 10, color: "#aaa" }}>{f.note}</div>
+                      <div style={{ fontSize: 8, color: f.part === "A" ? "#ff3355" : f.part === "B" ? "#22cc66" : "#ffd700" }}>
+                        {f.dr ? `class ${f.dr} · ${f.part}` : "—"}
+                      </div>
+                      <div style={{ fontSize: 8, color: "#555" }}>{f.bestTransducer}</div>
+                    </div>
+                  ))}
+                </div>
+                {/* Metrics */}
+                <div style={{ display: "flex", gap: 12, fontSize: 11 }}>
+                  <div>Roughness: <b style={{ color: roughness < 0.2 ? "#22cc66" : roughness < 0.4 ? "#ffd700" : "#ff5566" }}>{roughness}</b></div>
+                  <div>Partitions: <b>{[...partsCovered].sort().join("+") || "—"}</b></div>
+                  <div>Classes: <b style={{ color: "#ffd700" }}>{classesCovered.size}/9</b></div>
+                </div>
+                <button onClick={playCombo} style={{ marginTop: 8, padding: "6px 20px", background: "#ff3355", border: "none", color: "#fff", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>▶ PLAY COMBINATION</button>
+              </div>
+
+              {/* Signal chain */}
+              <div style={{ flex: "0 0 220px", ...panel }}>
+                <div style={{ fontSize: 9, color: "#555", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Signal Chain</div>
+                <RoutingDiagram selectedFreqs={activeFreqs} />
+              </div>
+            </div>
+
+            {/* Logic Pro spec */}
+            <div style={{ ...panel, marginBottom: 10 }}>
+              <LogicSpec selectedFreqs={activeFreqs} presetName={preset.name} />
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Custom build mode */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+              {/* Filters */}
+              <div style={{ ...panel, flex: "0 0 auto" }}>
+                <div style={{ fontSize: 9, color: "#555", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Partition</div>
+                <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+                  {["all", "A", "B", "C"].map(p => (
+                    <button key={p} onClick={() => setPartFilter(p)} style={btn(partFilter === p, p === "A" ? "#ff3355" : p === "B" ? "#22cc66" : p === "C" ? "#ffd700" : undefined)}>{p === "all" ? "All" : `Part ${p}`}</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ ...panel, flex: "0 0 auto" }}>
+                <div style={{ fontSize: 9, color: "#555", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Zone</div>
+                <div style={{ display: "flex", gap: 2 }}>
+                  {["all", "sub-bass", "bass", "low-mid"].map(z => (
+                    <button key={z} onClick={() => setZoneFilter(z)} style={btn(zoneFilter === z)}>{z}</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ ...panel, flex: "0 0 auto" }}>
+                <label style={{ fontSize: 10, color: "#888", cursor: "pointer" }}>
+                  <input type="checkbox" checked={integerOnly} onChange={e => setIntegerOnly(e.target.checked)} style={{ accentColor: "#ffd700" }} /> Integer Hz only
+                </label>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+              {/* Frequency picker */}
+              <div style={{ flex: "1 1 400px", ...panel, maxHeight: 350, overflowY: "auto" }}>
+                <div style={{ fontSize: 9, color: "#555", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Click to add/remove frequencies ({filteredDB.length} available)</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                  {filteredDB.map(f => {
+                    const selected = customFreqs.includes(f.freq);
+                    const partColor = f.part === "A" ? "#ff3355" : f.part === "B" ? "#22cc66" : f.part === "C" ? "#ffd700" : "#555";
+                    return (
+                      <div key={f.freq} onClick={() => toggleCustom(f.freq)}
+                        style={{ padding: "3px 7px", borderRadius: 4, cursor: "pointer", textAlign: "center", minWidth: 55,
+                          background: selected ? `${partColor}20` : "#0a0a14",
+                          border: `1px solid ${selected ? partColor : "#1a1a2a"}` }}>
+                        <div style={{ fontSize: 11, fontWeight: selected ? "bold" : "normal", color: selected ? "#fff" : "#888" }}>{f.freq}</div>
+                        <div style={{ fontSize: 7, color: partColor }}>{f.note} · {f.part || "—"}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Selected summary */}
+              <div style={{ flex: "0 0 220px", ...panel }}>
+                <div style={{ fontSize: 9, color: "#555", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Selected ({customFreqs.length})</div>
+                {activeFreqs.length > 0 ? (
+                  <>
+                    {activeFreqs.map((f, i) => (
+                      <div key={i} style={{ fontSize: 10, marginBottom: 2, display: "flex", justifyContent: "space-between" }}>
+                        <span style={{ color: "#fff", fontWeight: "bold" }}>{f.freq} Hz</span>
+                        <span style={{ color: "#888" }}>{f.note}</span>
+                        <span style={{ color: f.part === "A" ? "#ff3355" : f.part === "B" ? "#22cc66" : "#ffd700" }}>{f.part || "—"}</span>
+                        <span style={{ color: "#555" }}>{f.bestTransducer}</span>
+                      </div>
+                    ))}
+                    <div style={{ borderTop: "1px solid #2a2a3a", marginTop: 6, paddingTop: 6, fontSize: 10 }}>
+                      <div>Roughness: <b style={{ color: roughness < 0.2 ? "#22cc66" : roughness < 0.4 ? "#ffd700" : "#ff5566" }}>{roughness}</b></div>
+                      <div>Partitions: <b>{[...partsCovered].sort().join("+") || "—"}</b></div>
+                      <div>Classes: <b style={{ color: "#ffd700" }}>{classesCovered.size}/9</b></div>
+                    </div>
+                    <button onClick={playCombo} style={{ marginTop: 6, width: "100%", padding: "5px", background: "#ff3355", border: "none", color: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 10, fontFamily: "inherit" }}>▶ PLAY</button>
+                    <button onClick={() => setCustomFreqs([])} style={{ marginTop: 3, width: "100%", padding: "4px", background: "transparent", border: "1px solid #333", color: "#666", borderRadius: 4, cursor: "pointer", fontSize: 9, fontFamily: "inherit" }}>CLEAR ALL</button>
+                  </>
+                ) : (
+                  <div style={{ color: "#444", fontSize: 10 }}>Click frequencies to build a combination</div>
+                )}
+              </div>
+            </div>
+
+            {/* Routing for custom */}
+            {customFreqs.length > 0 && (
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 300px", ...panel }}>
+                  <LogicSpec selectedFreqs={activeFreqs} presetName="Custom Combination" />
+                </div>
+                <div style={{ flex: "0 0 220px", ...panel }}>
+                  <div style={{ fontSize: 9, color: "#555", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Signal Chain</div>
+                  <RoutingDiagram selectedFreqs={activeFreqs} />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Hardware reference */}
+        <details style={{ ...panel, marginTop: 10 }}>
+          <summary style={{ cursor: "pointer", fontSize: 11, color: "#888" }}>Hardware Reference (click to expand)</summary>
+          <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 6 }}>
+            {Object.values(HARDWARE).map(h => (
+              <div key={h.name} style={{ padding: "6px 8px", borderRadius: 4, background: "#0a0a14", border: "1px solid #1a1a2a" }}>
+                <div style={{ fontSize: 11, fontWeight: "bold", color: "#ff3355" }}>{h.name}</div>
+                <div style={{ fontSize: 9, color: "#888" }}>{h.role}</div>
+                {h.range && <div style={{ fontSize: 8, color: "#555" }}>Range: {h.range}</div>}
+                {h.rms && <div style={{ fontSize: 8, color: "#555" }}>Power: {h.rms}W RMS @ {h.impedance}Ω</div>}
+                <div style={{ fontSize: 8, color: "#444" }}>{h.note}</div>
+              </div>
+            ))}
+          </div>
+        </details>
+
+        <div style={{ textAlign: "center", marginTop: 12, fontSize: 8, color: "#222", letterSpacing: 1 }}>
+          SACRIFUNK FREQUENCY DESIGNER · Hardware-Aware Vibrotactile Protocol Design · 2026
+        </div>
+      </div>
+    </div>
+  );
+}
