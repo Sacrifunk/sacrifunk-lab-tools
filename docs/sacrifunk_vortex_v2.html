@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vortex Explorer V2 — Sacrifunk Lab</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <style>
+    body { background: #0a0a0f; color: #e8e8f0; margin: 0; font-family: 'Inter', -apple-system, sans-serif; }
+    .lab-nav { background: rgba(10,10,15,0.95); border-bottom: 1px solid #2a2a3a; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(10px); }
+    .lab-nav a { color: #d4a843; text-decoration: none; font-family: 'Jura', sans-serif; font-size: 14px; letter-spacing: 1px; }
+    .lab-nav a:hover { color: #e8c060; }
+    .lab-nav .brand { font-size: 18px; font-weight: 600; letter-spacing: 2px; }
+    #root { min-height: calc(100vh - 50px); }
+  </style>
+  <link href="https://fonts.googleapis.com/css2?family=Jura:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="lab-nav">
+    <a href="https://sacrifunk.com/the-lab/" class="brand">SACRIFUNK LAB</a>
+    <div>
+      <a href="index.html">All Tools</a>
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      <a href="https://sacrifunk.com">sacrifunk.com</a>
+    </div>
+  </nav>
+  <div id="root"></div>
+  <script type="text/babel" data-type="module">
+const { useState, useMemo, useCallback, useRef, useEffect } = React;
+
+
+// ═══════════════════════════════════════════════════════════════
+// CONSTANTS & DATA
+// ═══════════════════════════════════════════════════════════════
+const C = {
+  bg:"#08080e", panel:"#11111e", panelB:"#1e1e36", accent:"#ff3355",
+  loop:"#ff3355", feeder:"#22cc66", axis:"#ffd700", text:"#e0e0f0",
+  dim:"#6668", bright:"#fff", blue:"#4488ff", purple:"#aa55ff",
+};
+const NOTE12 = ["C","C#","D","Eb","E","F","F#","G","Ab","A","Bb","B"];
+const JI5 = {0:1,1:16/15,2:9/8,3:6/5,4:5/4,5:4/3,6:45/32,7:3/2,8:8/5,9:5/3,10:9/5,11:15/8};
+const JI_DR = {0:4,2:9,4:5,6:9,7:6,11:3}; // semitone → digital root at C=256
+
+const SCALES = {
+  "Sacrifunk":[0,1,3,6,7,8,11],
+  "Hyper Phrygian":[0,1,3,4,7,8,10],
+  "Super Phrygian":[0,1,3,4,7,8,11],
+  "Super Hyper Phr":[0,1,3,4,7,8,10,11],
+  "Vibron":[0,1,2,5,6,7,9,10,11],
+  "Ionian (Major)":[0,2,4,5,7,9,11],
+  "Dorian":[0,2,3,5,7,9,10],
+  "Phrygian":[0,1,3,5,7,8,10],
+  "Aeolian (Minor)":[0,2,3,5,7,8,10],
+  "Harmonic Minor":[0,2,3,5,7,8,11],
+  "Double Harmonic":[0,1,4,5,7,8,11],
+  "Hungarian Minor":[0,2,3,6,7,8,11],
+  "Blues":[0,3,5,6,7,10],
+  "Whole Tone":[0,2,4,6,8,10],
+  "Chromatic":Array.from({length:12},(_,i)=>i),
+};
+
+// ═══════════════════════════════════════════════════════════════
+// COMPUTE ENGINE
+// ═══════════════════════════════════════════════════════════════
+function computeVortex(N, mult) {
+  if(N<2) return {cycles:[],feeders:[],inCycle:new Set(),mapping:{}};
+  const mod = x => { const r=x%N; return r===0?N:r; };
+  const mapping = {};
+  for(let k=1;k<=N;k++) mapping[k]=mod(k*mult);
+  const visited=new Set(), inCycle=new Set(), cycles=[];
+  for(let s=1;s<=N;s++){
+    if(visited.has(s)) continue;
+    const path=[], ps=new Set(); let cur=s;
+    while(!visited.has(cur)&&!ps.has(cur)){path.push(cur);ps.add(cur);cur=mapping[cur];}
+    if(ps.has(cur)){const idx=path.indexOf(cur);const cy=path.slice(idx);cy.forEach(n=>inCycle.add(n));cycles.push(cy);}
+    path.forEach(n=>visited.add(n));
+  }
+  const feeders=[];
+  for(let k=1;k<=N;k++) if(!inCycle.has(k)) feeders.push(k);
+  // Feeder chains
+  const chains=[], used=new Set();
+  for(const fn of feeders){
+    if(used.has(fn)) continue;
+    const ch=[fn]; used.add(fn); let c=mapping[fn];
+    while(!inCycle.has(c)&&!used.has(c)){ch.push(c);used.add(c);c=mapping[c];}
+    ch.push(c); chains.push(ch);
+  }
+  return {cycles, feeders, inCycle, mapping, chains, N};
+}
+
+function nodePos(i, total, cx, cy, r) {
+  const a = -Math.PI/2 + 2*Math.PI*(i-1)/total;
+  return {x:cx+r*Math.cos(a), y:cy+r*Math.sin(a)};
+}
+
+function stabilityScore(pos, generators, N) {
+  let score=0;
+  for(const g of generators){
+    const {inCycle}=computeVortex(N,g);
+    if(inCycle.has(pos)) score++;
+  }
+  return score;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// VORTEX DIAGRAM (SVG)
+// ═══════════════════════════════════════════════════════════════
+function VortexSVG({N, multipliers, scalePositions, showLabels, showJI, size=420}) {
+  const cx=size/2, cy=size/2, r=size*0.38;
+  const nodeR = Math.max(5, Math.min(18, 220/N));
+  const gens = [2,3,5,7,11];
+
+  const pos = useMemo(()=>{
+    const p={};
+    for(let i=1;i<=N;i++) p[i]=nodePos(i,N,cx,cy,r);
+    return p;
+  },[N,cx,cy,r]);
+
+  // Compute for each multiplier
+  const vortices = useMemo(()=>
+    multipliers.map(m=>({mult:m, ...computeVortex(N,m)}))
+  ,[N, multipliers]);
+
+  // Combined inCycle
+  const allInCycle = useMemo(()=>{
+    const s=new Set();
+    vortices.forEach(v=>v.inCycle.forEach(n=>s.add(n)));
+    return s;
+  },[vortices]);
+
+  // Stability scores (for N=12)
+  const scores = useMemo(()=>{
+    if(N>20) return {};
+    const s={};
+    for(let i=1;i<=N;i++) s[i]=stabilityScore(i, gens, N);
+    return s;
+  },[N]);
+
+  const scaleSet = new Set(scalePositions||[]);
+  const colors = ["#ff3355","#4488ff","#aa55ff","#22cc66","#ff8800"];
+
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} style={{width:"100%",maxWidth:size,display:"block"}}>
+      <defs>
+        <radialGradient id="vbg"><stop offset="0%" stopColor="#1a1a30"/><stop offset="100%" stopColor="#0a0a14"/></radialGradient>
+        <filter id="gl"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <circle cx={cx} cy={cy} r={r+24} fill="url(#vbg)"/>
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#2a2a4a" strokeWidth="1" opacity="0.4"/>
+
+      {/* Draw edges for each multiplier */}
+      {vortices.map((v,vi)=>{
+        const col = colors[vi % colors.length];
+        const opacity = multipliers.length > 1 ? 0.5 : 0.85;
+        return (
+          <g key={`v${vi}`}>
+            {/* Feeder chains */}
+            {v.chains && v.chains.map((ch,ci)=>
+              ch.slice(0,-1).map((node,i)=>{
+                const n=ch[i+1]; const p1=pos[node],p2=pos[n];
+                if(!p1||!p2) return null;
+                return <line key={`f${vi}-${ci}-${i}`} x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke={C.feeder} strokeWidth="1" opacity={opacity*0.5}/>;
+              })
+            )}
+            {/* Cycles */}
+            {v.cycles.map((cy,ci)=>
+              cy.map((node,i)=>{
+                const next=cy[(i+1)%cy.length]; const p1=pos[node],p2=pos[next];
+                if(!p1||!p2) return null;
+                return <line key={`c${vi}-${ci}-${i}`} x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
+                  stroke={col} strokeWidth={multipliers.length>1?1.5:2} opacity={opacity} filter="url(#gl)"/>;
+              })
+            )}
+          </g>
+        );
+      })}
+
+      {/* Nodes */}
+      {Array.from({length:N},(_,i)=>i+1).map(n=>{
+        const p=pos[n]; if(!p) return null;
+        const isAxis = n===N;
+        const inScale = scaleSet.has(n);
+        const isInAnyCycle = allInCycle.has(n);
+        const sc = scores[n];
+
+        let fill = isAxis ? C.axis : isInAnyCycle ? C.loop : "#2a2a4a";
+        let strokeCol = "none", sw = 0;
+        if(inScale) { strokeCol="#ffd700"; sw=2.5; }
+
+        // Label
+        let label = String(n);
+        if(N===12 && showLabels) label = NOTE12[n-1];
+        if(N===9 && showJI) {
+          const jiMap={1:"C/E",2:"C/E",3:"G/B",4:"C/E",5:"C/E",6:"G/B",7:"C/E",8:"C/E",9:"D/F#"};
+          label = jiMap[n]||String(n);
+        }
+
+        return (
+          <g key={`n${n}`}>
+            {inScale && <circle cx={p.x} cy={p.y} r={nodeR+4} fill="none" stroke="#ffd700" strokeWidth="1.5" opacity="0.4"/>}
+            <circle cx={p.x} cy={p.y} r={nodeR} fill={fill} stroke={strokeCol} strokeWidth={sw} opacity={0.9}/>
+            {N<=24 && (
+              <text x={p.x} y={p.y + (N===12&&showJI?-nodeR-6:0)} textAnchor="middle" dominantBaseline="central"
+                fill={isAxis?"#000":"#fff"} fontSize={Math.max(7,nodeR*0.75)} fontWeight="bold"
+                fontFamily="'JetBrains Mono',monospace">{label}</text>
+            )}
+            {N===12 && showJI && sc!==undefined && (
+              <text x={p.x} y={p.y+nodeR+10} textAnchor="middle" fill={sc>=4?"#22cc66":sc>=3?"#ffd700":"#ff5566"}
+                fontSize="8" fontFamily="'JetBrains Mono',monospace">{sc}/5</text>
+            )}
+          </g>
+        );
+      })}
+
+      {/* Legend */}
+      <text x={8} y={size-8} fill={C.dim} fontSize="9" fontFamily="'JetBrains Mono',monospace">
+        {multipliers.map((m,i)=>`×${m}`).join(" + ")} on {N}-class
+      </text>
+    </svg>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ANALYSIS PANEL
+// ═══════════════════════════════════════════════════════════════
+function AnalysisPanel({N, multipliers, scaleName}) {
+  const results = useMemo(()=>
+    multipliers.map(m=>{
+      const v=computeVortex(N,m);
+      const realLoops = v.cycles.filter(c=> !(c.length===1 && c[0]===N));
+      return {mult:m, loops:realLoops.length, feeders:v.feeders.length, cycles:v.cycles, gcd:gcd(m,N)};
+    })
+  ,[N, multipliers]);
+
+  function gcd(a,b){return b===0?a:gcd(b,a%b);}
+
+  return (
+    <div style={{background:C.panel,borderRadius:10,padding:"12px 14px",border:`1px solid ${C.panelB}`,fontSize:12,color:C.text}}>
+      <div style={{fontSize:11,color:C.dim,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Cycle Analysis</div>
+      {results.map((r,i)=>(
+        <div key={i} style={{marginBottom:6,padding:"6px 8px",background:"#0a0a14",borderRadius:6,border:"1px solid #1a1a2a"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{color:["#ff3355","#4488ff","#aa55ff","#22cc66","#ff8800"][i%5],fontWeight:"bold"}}>×{r.mult}</span>
+            <span style={{color:C.dim}}>gcd={r.gcd}</span>
+            <span><span style={{color:C.loop}}>L{r.loops}</span> <span style={{color:C.feeder}}>F{r.feeders}</span></span>
+          </div>
+          <div style={{fontSize:10,color:C.dim,marginTop:3}}>
+            {r.cycles.map((cy,ci)=>{
+              const isAxis = cy.length===1 && cy[0]===N;
+              const label = isAxis ? `${N}→${N}(axis)` : cy.join("→")+"→"+cy[0];
+              return <span key={ci} style={{marginRight:6,color:isAxis?C.axis:C.loop}}>{label}</span>;
+            })}
+          </div>
+        </div>
+      ))}
+      {/* Laws check */}
+      <div style={{marginTop:8,fontSize:10,color:C.dim,lineHeight:1.6}}>
+        {results.map((r,i)=>{
+          const isPerm = r.gcd===1;
+          return <div key={i}>Law I: gcd({r.mult},{N})={r.gcd} → {isPerm?"permutation (F=0) ✅":"contraction (F>0) ✅"}</div>;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SPECTRAL MINI-PANEL (for N=12 with scale)
+// ═══════════════════════════════════════════════════════════════
+function SpectralPanel({scaleName}) {
+  const scale = SCALES[scaleName];
+  if(!scale || scale.length > 8) return null;
+
+  // Build triads and compute roughness indicator
+  const triads = useMemo(()=>{
+    const results = [];
+    const n = scale.length;
+    for(let deg=0; deg<Math.min(n,7); deg++){
+      const i0=scale[deg%n], i1=scale[(deg+2)%n], i2=scale[(deg+4)%n];
+      const r0=JI5[i0%12], r1=JI5[i1%12], r2=JI5[i2%12];
+      let ratios=[1, r1/r0, r2/r0];
+      for(let k=1;k<3;k++){while(ratios[k]<1)ratios[k]*=2;while(ratios[k]>2)ratios[k]/=2;}
+      if(ratios[2]<ratios[1])ratios[2]*=2;
+
+      // Simplified roughness indicator
+      const int1=Math.round(1200*Math.log2(ratios[1]));
+      const int2=Math.round(1200*Math.log2(ratios[2]));
+      let quality="?";
+      if(int1>350&&int1<420&&int2>680&&int2<720) quality="Maj";
+      else if(int1>280&&int1<330&&int2>680&&int2<720) quality="min";
+      else if(int1>280&&int1<330&&int2>580&&int2<660) quality="dim";
+      else if(int1>350&&int1<420&&int2>750&&int2<820) quality="aug";
+      else quality=`${int1}¢`;
+
+      // Check if all dyads are simple ratios (zero beating proxy)
+      const isJIPure = [i0,i1,i2].every(s=>[0,2,3,4,5,7,8,9,10,11].includes(s%12)) &&
+        ![6].some(t=>[i0,i1,i2].map(x=>x%12).includes(t)); // F# causes beating
+
+      const hasF = [i0,i1,i2].some(x=>x%12===6); // F# = 45/32
+
+      results.push({deg:deg+1, notes:[NOTE12[i0%12],NOTE12[i1%12],NOTE12[i2%12]], quality, pure:!hasF, hasF});
+    }
+    return results;
+  },[scaleName]);
+
+  if(triads.length===0) return null;
+
+  return (
+    <div style={{background:C.panel,borderRadius:10,padding:"12px 14px",border:`1px solid ${C.panelB}`,fontSize:11,color:C.text}}>
+      <div style={{fontSize:11,color:C.dim,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Spectral Coherence</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(90px,1fr))",gap:4}}>
+        {triads.map(t=>(
+          <div key={t.deg} style={{padding:"4px 6px",borderRadius:4,fontSize:10,
+            background:t.pure?"#0a1a0a":"#1a0a0a",border:`1px solid ${t.pure?"#224422":"#332222"}`}}>
+            <div style={{fontWeight:"bold",color:t.pure?"#22cc66":"#ff5566"}}>{t.deg}. {t.notes.join("-")}</div>
+            <div style={{color:C.dim}}>{t.quality} {t.pure?"✅ pure":"❌ F# beat"}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CYMATICS MINI (inline)
+// ═══════════════════════════════════════════════════════════════
+function CymaticsMini({freq, size=200}) {
+  const canvasRef = useRef(null);
+  useEffect(()=>{
+    const canvas=canvasRef.current; if(!canvas) return;
+    const ctx=canvas.getContext("2d");
+    const s=freq/50;
+    const m=Math.max(1,Math.round(Math.sqrt(s)));
+    const n=Math.max(1,Math.round(s/m));
+    const img=ctx.createImageData(size,size);
+    const cx=size/2,r=size/2-1;
+    for(let y=0;y<size;y++){
+      for(let x=0;x<size;x++){
+        const nx=(x-cx)/r, ny=(y-cx)/r;
+        const idx=(y*size+x)*4;
+        if(nx*nx+ny*ny>1){img.data[idx]=8;img.data[idx+1]=8;img.data[idx+2]=12;img.data[idx+3]=255;continue;}
+        const v=Math.cos(n*Math.PI*nx)*Math.cos(m*Math.PI*ny)-Math.cos(m*Math.PI*nx)*Math.cos(n*Math.PI*ny);
+        const isNode=Math.abs(v)<0.06;
+        if(isNode){const b=200+Math.random()*55;img.data[idx]=b;img.data[idx+1]=b*0.9;img.data[idx+2]=b*0.7;}
+        else{const d=Math.floor(15+Math.abs(v)*25);img.data[idx]=d;img.data[idx+1]=d;img.data[idx+2]=d+5;}
+        img.data[idx+3]=255;
+      }
+    }
+    ctx.putImageData(img,0,0);
+  },[freq,size]);
+  return <canvas ref={canvasRef} width={size} height={size} style={{borderRadius:"50%",border:"1px solid #2a2a4a"}}/>;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════
+function VortexExplorerV2() {
+  const [N, setN] = useState(12);
+  const [mults, setMults] = useState([2]);
+  const [scaleName, setScaleName] = useState("Sacrifunk");
+  const [showScale, setShowScale] = useState(true);
+  const [showLabels, setShowLabels] = useState(true);
+  const [showJI, setShowJI] = useState(true);
+  const [tab, setTab] = useState("vortex"); // vortex | cymatics | compare
+  const [cyFreq, setCyFreq] = useState(256);
+
+  const toggleMult = useCallback((m)=>{
+    setMults(prev => prev.includes(m) ? (prev.length>1 ? prev.filter(x=>x!==m) : prev) : [...prev,m]);
+  },[]);
+
+  const scalePositions = useMemo(()=>{
+    if(!showScale || N!==12) return [];
+    const sc = SCALES[scaleName];
+    if(!sc) return [];
+    return sc.map(s=>(s%12)+1);
+  },[showScale, N, scaleName]);
+
+  // Stability summary for current scale
+  const stabSummary = useMemo(()=>{
+    if(N!==12 || !showScale) return null;
+    const gens=[2,3,5,7,11];
+    const sc=SCALES[scaleName]; if(!sc) return null;
+    const positions=sc.map(s=>(s%12)+1);
+    const scores=positions.map(p=>stabilityScore(p,gens,12));
+    const avg=scores.reduce((a,b)=>a+b,0)/scores.length;
+    return {scores, avg, notes:positions.map(p=>NOTE12[p-1])};
+  },[N, showScale, scaleName]);
+
+  return (
+    <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'JetBrains Mono',monospace",padding:12}}>
+      <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+
+      {/* Header */}
+      <div style={{textAlign:"center",marginBottom:12}}>
+        <h1 style={{fontSize:22,color:C.accent,margin:0,letterSpacing:2}}>SACRIFUNK VORTEX EXPLORER v2</h1>
+        <p style={{fontSize:10,color:C.dim,margin:"2px 0"}}>Multi-Generator · Scale Overlay · JI Frequencies · Stability Scores · Spectral Coherence · Cymatics</p>
+      </div>
+
+      {/* Tab bar */}
+      <div style={{display:"flex",justifyContent:"center",gap:4,marginBottom:12}}>
+        {[["vortex","VORTEX"],["cymatics","CYMATICS"],["compare","COMPARE"]].map(([key,label])=>(
+          <button key={key} onClick={()=>setTab(key)} style={{padding:"5px 16px",background:tab===key?C.accent:"#1a1a2e",
+            border:`1px solid ${tab===key?C.accent:"#333"}`,color:tab===key?"#fff":"#888",borderRadius:6,cursor:"pointer",
+            fontSize:10,letterSpacing:1,fontFamily:"inherit"}}>{label}</button>
+        ))}
+      </div>
+
+      {tab==="vortex" && (
+        <div style={{display:"flex",gap:12,justifyContent:"center",flexWrap:"wrap",maxWidth:1100,margin:"0 auto"}}>
+          {/* Diagram */}
+          <div style={{textAlign:"center"}}>
+            <VortexSVG N={N} multipliers={mults} scalePositions={scalePositions} showLabels={showLabels} showJI={showJI} size={420}/>
+          </div>
+
+          {/* Controls */}
+          <div style={{flex:"0 0 320px",display:"flex",flexDirection:"column",gap:8}}>
+            {/* Base N */}
+            <div style={{background:C.panel,borderRadius:10,padding:"10px 14px",border:`1px solid ${C.panelB}`}}>
+              <div style={{fontSize:10,color:C.dim,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Base N</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <input type="range" min={3} max={64} value={N} onChange={e=>setN(Number(e.target.value))} style={{flex:1,accentColor:C.accent}}/>
+                <input type="number" value={N} min={3} max={999} onChange={e=>setN(Number(e.target.value))}
+                  style={{width:50,background:"#1a1a2e",border:"1px solid #333",color:C.accent,padding:"3px 6px",
+                    borderRadius:4,fontSize:14,fontWeight:"bold",textAlign:"center",fontFamily:"inherit"}}/>
+              </div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:6}}>
+                {[9,12,19,27,31,32,53,64,81].map(n=>(
+                  <button key={n} onClick={()=>setN(n)} style={{padding:"2px 8px",background:N===n?"#2a2a5a":"#0a0a14",
+                    border:`1px solid ${N===n?"#4444aa":"#222"}`,color:N===n?"#aaf":"#666",borderRadius:3,cursor:"pointer",
+                    fontSize:9,fontFamily:"inherit"}}>{n}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Multipliers */}
+            <div style={{background:C.panel,borderRadius:10,padding:"10px 14px",border:`1px solid ${C.panelB}`}}>
+              <div style={{fontSize:10,color:C.dim,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>
+                Generators (click to toggle, multi-select)
+              </div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
+                {[2,3,4,5,6,7,8,9,10,11].map(m=>{
+                  const active=mults.includes(m);
+                  const colors=["#ff3355","#4488ff","#aa55ff","#22cc66","#ff8800"];
+                  const col=active?colors[mults.indexOf(m)%5]:"#444";
+                  return (
+                    <button key={m} onClick={()=>toggleMult(m)} style={{padding:"3px 10px",
+                      background:active?"#1a1a3a":"#0a0a14",border:`1px solid ${col}`,
+                      color:col,borderRadius:4,cursor:"pointer",fontSize:11,fontWeight:active?"bold":"normal",fontFamily:"inherit"}}>
+                      ×{m}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{fontSize:9,color:C.dim,marginTop:4}}>
+                Active: {mults.map(m=>`×${m}`).join(" + ")} | Musical: ×2=oct ×3=m3 ×5=P4 ×7=P5 ×11=M7
+              </div>
+            </div>
+
+            {/* Scale overlay (only for N=12) */}
+            {N===12 && (
+              <div style={{background:C.panel,borderRadius:10,padding:"10px 14px",border:`1px solid ${C.panelB}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <div style={{fontSize:10,color:C.dim,textTransform:"uppercase",letterSpacing:1}}>Scale Overlay</div>
+                  <label style={{fontSize:10,color:C.dim,cursor:"pointer"}}>
+                    <input type="checkbox" checked={showScale} onChange={e=>setShowScale(e.target.checked)} style={{accentColor:C.axis}}/> Show
+                  </label>
+                </div>
+                <select value={scaleName} onChange={e=>setScaleName(e.target.value)}
+                  style={{width:"100%",background:"#1a1a2e",border:"1px solid #333",color:C.text,padding:"4px 8px",
+                    borderRadius:4,fontSize:11,fontFamily:"inherit"}}>
+                  {Object.keys(SCALES).map(s=><option key={s} value={s}>{s}</option>)}
+                </select>
+                {stabSummary && showScale && (
+                  <div style={{marginTop:6,fontSize:10,color:C.dim}}>
+                    <div>Avg stability: <span style={{color:stabSummary.avg>=3.7?"#22cc66":stabSummary.avg>=3.5?"#ffd700":"#ff5566",fontWeight:"bold"}}>
+                      {stabSummary.avg.toFixed(2)}/5</span></div>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:2,marginTop:3}}>
+                      {stabSummary.notes.map((n,i)=>(
+                        <span key={i} style={{padding:"1px 5px",borderRadius:3,fontSize:9,
+                          background:stabSummary.scores[i]>=4?"#0a2a0a":stabSummary.scores[i]>=3?"#1a1a0a":"#2a0a0a",
+                          color:stabSummary.scores[i]>=4?"#22cc66":stabSummary.scores[i]>=3?"#ffd700":"#ff5566",
+                          border:"1px solid #222"}}>{n}:{stabSummary.scores[i]}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Display options */}
+            <div style={{background:C.panel,borderRadius:10,padding:"8px 14px",border:`1px solid ${C.panelB}`,display:"flex",gap:12}}>
+              <label style={{fontSize:10,color:C.dim,cursor:"pointer"}}>
+                <input type="checkbox" checked={showLabels} onChange={e=>setShowLabels(e.target.checked)} style={{accentColor:C.accent}}/> Note names
+              </label>
+              <label style={{fontSize:10,color:C.dim,cursor:"pointer"}}>
+                <input type="checkbox" checked={showJI} onChange={e=>setShowJI(e.target.checked)} style={{accentColor:C.accent}}/> JI / Scores
+              </label>
+            </div>
+
+            {/* Analysis */}
+            <AnalysisPanel N={N} multipliers={mults} scaleName={scaleName}/>
+
+            {/* Spectral (N=12 only) */}
+            {N===12 && showScale && <SpectralPanel scaleName={scaleName}/>}
+          </div>
+        </div>
+      )}
+
+      {tab==="cymatics" && (
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:12}}>
+          <CymaticsMini freq={cyFreq} size={360}/>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <input type="range" min={20} max={2000} value={cyFreq} onChange={e=>setCyFreq(Number(e.target.value))}
+              style={{width:250,accentColor:C.accent}}/>
+            <input type="number" value={cyFreq} onChange={e=>setCyFreq(Number(e.target.value))}
+              style={{width:60,background:"#1a1a2e",border:"1px solid #333",color:C.accent,padding:"3px",borderRadius:4,
+                fontSize:14,textAlign:"center",fontFamily:"inherit"}}/>
+            <span style={{fontSize:11,color:C.dim}}>Hz</span>
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:4,justifyContent:"center"}}>
+            {[{n:"C",f:256},{n:"D",f:288},{n:"E",f:320},{n:"F",f:341.33},{n:"G",f:384},{n:"A",f:426.67},{n:"B",f:480},
+              {n:"C₂",f:64},{n:"E₂",f:80},{n:"G₂",f:96},{n:"C₁",f:32},{n:"E₁",f:40},{n:"G₁",f:48}].map(p=>(
+              <button key={p.n} onClick={()=>setCyFreq(p.f)} style={{padding:"3px 10px",
+                background:Math.abs(cyFreq-p.f)<0.5?"#ff3355":"#1a1a2e",border:"1px solid #333",
+                color:Math.abs(cyFreq-p.f)<0.5?"#fff":"#888",borderRadius:4,cursor:"pointer",fontSize:10,fontFamily:"inherit"}}>
+                {p.n}={p.f}
+              </button>
+            ))}
+          </div>
+          <div style={{fontSize:10,color:C.dim,maxWidth:400,textAlign:"center",lineHeight:1.5}}>
+            Chladni plate simulation. Bright lines = nodal patterns where particles accumulate.
+            Real physics — wave equation ∇²u = -(ω²/c²)u on a bounded circular domain.
+          </div>
+        </div>
+      )}
+
+      {tab==="compare" && (
+        <div style={{maxWidth:700,margin:"0 auto"}}>
+          <div style={{fontSize:11,color:C.dim,textTransform:"uppercase",letterSpacing:1,marginBottom:12,textAlign:"center"}}>
+            Side-by-side: ×2 vs ×7 on 12-class
+          </div>
+          <div style={{display:"flex",gap:12,justifyContent:"center",flexWrap:"wrap"}}>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:12,color:C.loop,marginBottom:4}}>×2 (Octave)</div>
+              <VortexSVG N={12} multipliers={[2]} scalePositions={scalePositions} showLabels={true} showJI={false} size={280}/>
+            </div>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:12,color:C.blue,marginBottom:4}}>×7 (Perfect Fifth)</div>
+              <VortexSVG N={12} multipliers={[7]} scalePositions={scalePositions} showLabels={true} showJI={false} size={280}/>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:12,justifyContent:"center",flexWrap:"wrap",marginTop:12}}>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:12,color:C.purple,marginBottom:4}}>×5 (Perfect Fourth)</div>
+              <VortexSVG N={12} multipliers={[5]} scalePositions={scalePositions} showLabels={true} showJI={false} size={280}/>
+            </div>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:12,color:"#ff8800",marginBottom:4}}>×11 (Mirror/M7)</div>
+              <VortexSVG N={12} multipliers={[11]} scalePositions={scalePositions} showLabels={true} showJI={false} size={280}/>
+            </div>
+          </div>
+          <div style={{textAlign:"center",marginTop:8,fontSize:10,color:C.dim}}>
+            Gold rings = {scaleName} scale notes. Only ×5, ×7, ×11 produce pure-loop graphs (coprime to 12).
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      <div style={{textAlign:"center",marginTop:16,fontSize:9,color:"#333",letterSpacing:1}}>
+        SACRIFUNK VORTEX EXPLORER v2 · Built on the Five Laws of Loop-Feeder Decomposition · March 2026
+      </div>
+    </div>
+  );
+}
+
+
+const container = document.getElementById('root');
+const root = ReactDOM.createRoot(container);
+root.render(React.createElement(VortexExplorerV2));
+  </script>
+</body>
+</html>

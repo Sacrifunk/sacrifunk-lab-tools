@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scale Explorer — Sacrifunk Lab</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <style>
+    body { background: #0a0a0f; color: #e8e8f0; margin: 0; font-family: 'Inter', -apple-system, sans-serif; }
+    .lab-nav { background: rgba(10,10,15,0.95); border-bottom: 1px solid #2a2a3a; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(10px); }
+    .lab-nav a { color: #d4a843; text-decoration: none; font-family: 'Jura', sans-serif; font-size: 14px; letter-spacing: 1px; }
+    .lab-nav a:hover { color: #e8c060; }
+    .lab-nav .brand { font-size: 18px; font-weight: 600; letter-spacing: 2px; }
+    #root { min-height: calc(100vh - 50px); }
+  </style>
+  <link href="https://fonts.googleapis.com/css2?family=Jura:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="lab-nav">
+    <a href="https://sacrifunk.com/the-lab/" class="brand">SACRIFUNK LAB</a>
+    <div>
+      <a href="index.html">All Tools</a>
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      <a href="https://sacrifunk.com">sacrifunk.com</a>
+    </div>
+  </nav>
+  <div id="root"></div>
+  <script type="text/babel" data-type="module">
+const { useState, useMemo, useCallback, useRef, useEffect } = React;
+
+
+// ═══════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════
+const NOTE_NAMES = ["C","C#","D","Eb","E","F","F#","G","Ab","A","Bb","B"];
+const JI5_RATIOS = [1, 16/15, 9/8, 6/5, 5/4, 4/3, 45/32, 3/2, 8/5, 5/3, 9/5, 15/8];
+const C256 = 256;
+const JI_DR = {0:4, 2:9, 4:5, 6:9, 7:6, 11:3};
+
+const SCALES = {
+  "Sacrifunk":        { semi: [0,1,3,6,7,8,11],     color: "#ff3355", desc: "1 ♭2 ♭3 #4 5 ♭6 7 — Phrygian + #4 + maj7" },
+  "Hyper Phrygian":   { semi: [0,1,3,4,7,8,10],     color: "#ff8800", desc: "1 ♭2 ♭3 ♭4 5 ♭6 ♭7 — ♭4 as functional M3" },
+  "Super Phrygian":   { semi: [0,1,3,4,7,8,11],     color: "#4488ff", desc: "1 ♭2 ♭3 4 5 ♭6 7 — Phrygian + maj7" },
+  "Super Hyper Phr":  { semi: [0,1,3,4,7,8,10,11],  color: "#aa55ff", desc: "1 ♭2 ♭3 ♭4 5 ♭6 ♭7 7 — Union (8-note)" },
+  "Vibron":           { semi: [0,1,2,5,6,7,9,10,11],color: "#22cc66", desc: "9-note, 13 semitones — exceeds octave" },
+  "Ionian (Major)":   { semi: [0,2,4,5,7,9,11],     color: "#888888", desc: "Standard major scale" },
+  "Dorian":           { semi: [0,2,3,5,7,9,10],     color: "#888888", desc: "Minor with raised 6th" },
+  "Phrygian":         { semi: [0,1,3,5,7,8,10],     color: "#888888", desc: "Standard Phrygian — parent mode" },
+  "Harmonic Minor":   { semi: [0,2,3,5,7,8,11],     color: "#888888", desc: "Most vortex-stable 7-note scale (4.00/5)" },
+  "Double Harmonic":  { semi: [0,1,4,5,7,8,11],     color: "#888888", desc: "= Bulgarian/Byzantine — Sacrifunk sibling" },
+  "Hungarian Minor":  { semi: [0,2,3,6,7,8,11],     color: "#888888", desc: "Closest relative to Sacrifunk (6/7 shared)" },
+  "Blues":            { semi: [0,3,5,6,7,10],        color: "#888888", desc: "Minor blues scale" },
+};
+
+const DEGREE_LABELS = {
+  0:"1", 1:"♭2", 2:"2", 3:"♭3", 4:"3", 5:"4", 6:"#4/♭5",
+  7:"5", 8:"♭6", 9:"6", 10:"♭7", 11:"7"
+};
+
+// Vortex stability (precomputed for 12-class, all 5 generators)
+function computeStability(pos) {
+  const gens = [2,3,5,7,11];
+  let score = 0;
+  for (const g of gens) {
+    const N = 12;
+    const mod = x => { const r=x%N; return r===0?N:r; };
+    const mapping = {};
+    for(let k=1;k<=N;k++) mapping[k]=mod(k*g);
+    const visited=new Set(), inCycle=new Set();
+    for(let s=1;s<=N;s++){
+      if(visited.has(s)) continue;
+      const path=[], ps=new Set(); let cur=s;
+      while(!visited.has(cur)&&!ps.has(cur)){path.push(cur);ps.add(cur);cur=mapping[cur];}
+      if(ps.has(cur)){const idx=path.indexOf(cur);path.slice(idx).forEach(n=>inCycle.add(n));}
+      path.forEach(n=>visited.add(n));
+    }
+    if(inCycle.has(pos)) score++;
+  }
+  return score;
+}
+
+const STABILITY_CACHE = {};
+for(let i=1;i<=12;i++) STABILITY_CACHE[i] = computeStability(i);
+
+// ═══════════════════════════════════════════════════════════════
+// AUDIO ENGINE
+// ═══════════════════════════════════════════════════════════════
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playNote(freq, duration = 0.6, delay = 0) {
+  const ctx = getAudioCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const now = ctx.currentTime + delay;
+  osc.type = "triangle";
+  osc.frequency.setValueAtTime(freq, now);
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(0.12, now + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + duration + 0.05);
+}
+
+function playChord(freqs, duration = 1.2) {
+  freqs.forEach(f => playNote(f, duration, 0));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FREQUENCY CALCULATIONS
+// ═══════════════════════════════════════════════════════════════
+function getJIFreq(rootSemitone, noteSemitone, octave = 4) {
+  const rootRatio = JI5_RATIOS[rootSemitone % 12];
+  const noteRatio = JI5_RATIOS[noteSemitone % 12];
+  const ratio = noteRatio / rootRatio;
+  const adjustedRatio = ratio < 1 ? ratio * 2 : (ratio >= 2 ? ratio / 2 : ratio);
+  const baseC = C256 / Math.pow(2, 8 - octave);
+  return baseC * rootRatio * adjustedRatio;
+}
+
+function getETFreq(rootSemitone, noteSemitone, octave = 4) {
+  const rootFreq = C256 * Math.pow(2, (rootSemitone - 48) / 12 + (octave - 4));
+  const interval = ((noteSemitone - rootSemitone) % 12 + 12) % 12;
+  return rootFreq * Math.pow(2, interval / 12);
+}
+
+function getCentsFromJI(semitone) {
+  const ji = JI5_RATIOS[semitone % 12];
+  const et = Math.pow(2, (semitone % 12) / 12);
+  return Math.round(1200 * Math.log2(ji / et) * 10) / 10;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PIANO KEY COMPONENT
+// ═══════════════════════════════════════════════════════════════
+function PianoKey({ note, semitone, isInScale, isRoot, stability, jiFreq, etFreq, degreeName, tuning, onPlay, isPlaying, scaleColor }) {
+  const isBlack = [1,3,6,8,10].includes(semitone % 12);
+  const centsDiff = getCentsFromJI(semitone);
+  const stabColor = stability >= 4 ? "#22cc66" : stability >= 3 ? "#ffd700" : "#ff5566";
+
+  return (
+    <div onClick={onPlay} style={{
+      display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+      cursor: "pointer", userSelect: "none", transition: "transform 0.1s",
+      transform: isPlaying ? "scale(1.08)" : "scale(1)",
+    }}>
+      {/* Stability indicator */}
+      <div style={{ fontSize: 9, color: stabColor, fontWeight: "bold" }}>{stability}/5</div>
+
+      {/* Key */}
+      <div style={{
+        width: isBlack ? 36 : 44, height: isBlack ? 90 : 120,
+        background: isPlaying ? scaleColor :
+          isRoot ? "#ffd700" :
+          isInScale ? (isBlack ? "#2a3a5a" : "#1a2a4a") :
+          (isBlack ? "#1a1a1a" : "#0e0e18"),
+        border: isInScale ? `2px solid ${scaleColor}` : `1px solid ${isBlack ? "#333" : "#2a2a3a"}`,
+        borderRadius: "0 0 6px 6px",
+        display: "flex", flexDirection: "column", justifyContent: "flex-end",
+        alignItems: "center", padding: "4px 2px",
+        boxShadow: isPlaying ? `0 0 12px ${scaleColor}40` : "none",
+      }}>
+        <div style={{ fontSize: 12, fontWeight: "bold", color: isRoot ? "#000" : "#fff" }}>{note}</div>
+        {isInScale && <div style={{ fontSize: 8, color: isRoot ? "#000" : "#aaa" }}>{degreeName}</div>}
+      </div>
+
+      {/* Frequency labels */}
+      {isInScale && (
+        <div style={{ fontSize: 8, textAlign: "center", lineHeight: 1.4 }}>
+          <div style={{ color: tuning === "ji" ? "#22cc66" : "#666" }}>JI: {jiFreq.toFixed(1)}</div>
+          <div style={{ color: tuning === "et" ? "#4488ff" : "#666" }}>ET: {etFreq.toFixed(1)}</div>
+          {centsDiff !== 0 && (
+            <div style={{ color: Math.abs(centsDiff) > 10 ? "#ff5566" : "#888", fontSize: 7 }}>
+              {centsDiff > 0 ? "+" : ""}{centsDiff}¢
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// VORTEX MINI DISPLAY
+// ═══════════════════════════════════════════════════════════════
+function VortexMini({ scalePositions, size = 180 }) {
+  const cx = size/2, cy = size/2, r = size * 0.38;
+  const nodeR = 10;
+
+  const partitions = { A: [1,2,4,5,7,8], B: [3,6], C: [9] };
+  const scaleSet = new Set(scalePositions);
+
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} style={{ width: size }}>
+      <circle cx={cx} cy={cy} r={r+8} fill="#0a0a14" />
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#2a2a4a" strokeWidth="0.5" />
+      {Array.from({length:9},(_,i)=>i+1).map(n => {
+        const a = -Math.PI/2 + 2*Math.PI*(n-1)/9;
+        const x = cx + r*Math.cos(a), y = cy + r*Math.sin(a);
+        const inA = partitions.A.includes(n);
+        const inB = partitions.B.includes(n);
+        const inC = partitions.C.includes(n);
+        const fill = inC ? "#ffd700" : inB ? "#22cc66" : "#ff3355";
+        const hasScaleNote = scalePositions.some(p => {
+          const dr = JI_DR[p];
+          return dr === n;
+        });
+        return (
+          <g key={n}>
+            {hasScaleNote && <circle cx={x} cy={y} r={nodeR+4} fill="none" stroke="#ffd700" strokeWidth="1.5" opacity="0.5"/>}
+            <circle cx={x} cy={y} r={nodeR} fill={fill} opacity={hasScaleNote ? 0.9 : 0.3} />
+            <text x={x} y={y} textAnchor="middle" dominantBaseline="central" fill="#fff" fontSize="9" fontWeight="bold"
+              fontFamily="'JetBrains Mono',monospace">{n}</text>
+          </g>
+        );
+      })}
+      <text x={cx} y={size-4} textAnchor="middle" fill="#555" fontSize="8" fontFamily="'JetBrains Mono',monospace">
+        9-class vortex
+      </text>
+    </svg>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TRIAD PANEL
+// ═══════════════════════════════════════════════════════════════
+function TriadPanel({ scale, rootSemi, tuning, scaleColor }) {
+  const triads = useMemo(() => {
+    const n = scale.length;
+    const results = [];
+    for (let deg = 0; deg < Math.min(n, 7); deg++) {
+      const i0 = (rootSemi + scale[deg]) % 12;
+      const i1 = (rootSemi + scale[(deg + 2) % n]) % 12;
+      const i2 = (rootSemi + scale[(deg + 4) % n]) % 12;
+      const notes = [NOTE_NAMES[i0], NOTE_NAMES[i1], NOTE_NAMES[i2]];
+      const hasF = [i0, i1, i2].some(x => x === 6); // F# = tritone
+      
+      const r0 = JI5_RATIOS[i0], r1 = JI5_RATIOS[i1], r2 = JI5_RATIOS[i2];
+      let ratios = [1, r1/r0, r2/r0];
+      for(let k=1;k<3;k++){while(ratios[k]<1)ratios[k]*=2;while(ratios[k]>2)ratios[k]/=2;}
+      if(ratios[2]<ratios[1])ratios[2]*=2;
+      const int1 = Math.round(1200*Math.log2(ratios[1]));
+      
+      let quality = "?";
+      if(int1>350&&int1<420) quality = "Maj";
+      else if(int1>280&&int1<330) quality = "min";
+      else if(int1>180&&int1<250) quality = "sus2";
+      else if(int1>450&&int1<530) quality = "sus4";
+      else quality = `${int1}¢`;
+
+      const octave = 4;
+      const freqs = tuning === "ji"
+        ? [i0,i1,i2].map(s => getJIFreq(0, s, octave))
+        : [i0,i1,i2].map(s => getETFreq(0, s, octave));
+
+      results.push({ deg: deg+1, notes, quality, pure: !hasF, freqs, hasF });
+    }
+    return results;
+  }, [scale, rootSemi, tuning]);
+
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+      {triads.map(t => (
+        <div key={t.deg} onClick={() => playChord(t.freqs)}
+          style={{ padding: "6px 8px", borderRadius: 6, cursor: "pointer", minWidth: 80, textAlign: "center",
+            background: t.pure ? "#0a1a0a" : "#1a0a0a",
+            border: `1px solid ${t.pure ? "#224422" : "#332222"}`,
+            transition: "transform 0.1s",
+          }}
+          onMouseDown={e => e.currentTarget.style.transform = "scale(0.95)"}
+          onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
+          onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+        >
+          <div style={{ fontSize: 11, fontWeight: "bold", color: t.pure ? "#22cc66" : "#ff5566" }}>
+            {t.notes.join("-")}
+          </div>
+          <div style={{ fontSize: 9, color: "#888" }}>
+            {t.quality} {t.pure ? "✅" : "❌ F#"}
+          </div>
+          <div style={{ fontSize: 8, color: "#555", marginTop: 2 }}>▶ click to play</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════
+function ScaleExplorer() {
+  const [scaleName, setScaleName] = useState("Sacrifunk");
+  const [rootSemi, setRootSemi] = useState(0);
+  const [tuning, setTuning] = useState("ji");
+  const [octave, setOctave] = useState(4);
+  const [playingNote, setPlayingNote] = useState(null);
+  const [autoPlay, setAutoPlay] = useState(false);
+  const autoRef = useRef(null);
+
+  const scaleData = SCALES[scaleName];
+  const scale = scaleData.semi;
+  const scaleColor = scaleData.color;
+
+  // Build note data for the keyboard
+  const noteData = useMemo(() => {
+    const data = [];
+    for (let i = 0; i < 13; i++) {
+      const semi = (rootSemi + i) % 12;
+      const isInScale = scale.includes(i % 12) || (i === 12 && scale.includes(0));
+      const isRoot = i === 0 || i === 12;
+      const pos12 = semi + 1;
+      const stability = STABILITY_CACHE[pos12];
+      const jiFreq = getJIFreq(rootSemi, semi, octave);
+      const etFreq = getETFreq(rootSemi, semi, octave);
+      const degIdx = scale.indexOf(i % 12);
+      const degreeName = degIdx >= 0 ? DEGREE_LABELS[scale[degIdx]] : "";
+      data.push({ note: NOTE_NAMES[semi], semi, absIndex: i, isInScale, isRoot, stability, jiFreq, etFreq, degreeName, pos12 });
+    }
+    return data;
+  }, [scaleName, rootSemi, tuning, octave, scale]);
+
+  const handlePlayNote = useCallback((nd) => {
+    const freq = tuning === "ji" ? nd.jiFreq : nd.etFreq;
+    playNote(freq, 0.8);
+    setPlayingNote(nd.absIndex);
+    setTimeout(() => setPlayingNote(null), 300);
+  }, [tuning]);
+
+  // Auto-play ascending
+  const handleAutoPlay = useCallback(() => {
+    if (autoRef.current) { clearTimeout(autoRef.current); autoRef.current = null; setAutoPlay(false); return; }
+    setAutoPlay(true);
+    const scaleNotes = noteData.filter(nd => nd.isInScale);
+    // Add octave note
+    const octaveNote = { ...noteData[12], isInScale: true };
+    const toPlay = [...scaleNotes, octaveNote];
+    
+    toPlay.forEach((nd, i) => {
+      const freq = tuning === "ji" ? nd.jiFreq : nd.etFreq;
+      playNote(freq, 0.5, i * 0.35);
+      setTimeout(() => { setPlayingNote(nd.absIndex); }, i * 350);
+    });
+    autoRef.current = setTimeout(() => { setPlayingNote(null); setAutoPlay(false); autoRef.current = null; }, toPlay.length * 350 + 500);
+  }, [noteData, tuning]);
+
+  // Play scale comparison (JI then ET)
+  const handleCompare = useCallback(() => {
+    const scaleNotes = noteData.filter(nd => nd.isInScale);
+    // JI ascending
+    scaleNotes.forEach((nd, i) => { playNote(nd.jiFreq, 0.4, i * 0.3); });
+    // Brief pause then ET ascending
+    const offset = scaleNotes.length * 0.3 + 0.5;
+    scaleNotes.forEach((nd, i) => { playNote(nd.etFreq, 0.4, offset + i * 0.3); });
+  }, [noteData]);
+
+  // Stability summary
+  const stabSummary = useMemo(() => {
+    const scaleNotes = noteData.filter(nd => nd.isInScale && nd.absIndex < 12);
+    const scores = scaleNotes.map(nd => nd.stability);
+    const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+    return { scores, avg, notes: scaleNotes.map(nd => nd.note) };
+  }, [noteData]);
+
+  // 9-class vortex positions
+  const vortexPositions = useMemo(() => {
+    return scale.filter(s => JI_DR[s] !== undefined).map(s => s);
+  }, [scale]);
+
+  // Partition coverage
+  const partCoverage = useMemo(() => {
+    const parts = new Set();
+    for (const s of scale) {
+      const dr = JI_DR[s];
+      if (dr) {
+        if ([1,2,4,5,7,8].includes(dr)) parts.add("A");
+        if ([3,6].includes(dr)) parts.add("B");
+        if (dr === 9) parts.add("C");
+      }
+    }
+    return parts;
+  }, [scale]);
+
+  // Common notes with C major
+  const cMajor = [0,2,4,5,7,9,11];
+  const commonWithC = useMemo(() => {
+    const transposedScale = scale.map(s => (s + rootSemi) % 12);
+    return cMajor.filter(n => transposedScale.includes(n));
+  }, [scale, rootSemi]);
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#08080e", color: "#e0e0f0",
+      fontFamily: "'JetBrains Mono', monospace", padding: "12px 16px" }}>
+      <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+
+      {/* Header */}
+      <div style={{ textAlign: "center", marginBottom: 12 }}>
+        <h1 style={{ fontSize: 22, color: "#ff3355", margin: 0, letterSpacing: 2 }}>SACRIFUNK SCALE EXPLORER</h1>
+        <p style={{ fontSize: 10, color: "#666", margin: "2px 0" }}>
+          Play · Compare JI vs ET · Vortex Coverage · Spectral Purity · Stability Scores
+        </p>
+      </div>
+
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+        {/* Controls Row */}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {/* Scale selector */}
+          <div style={{ flex: "1 1 200px", background: "#11111e", borderRadius: 8, padding: "8px 12px", border: "1px solid #1e1e36" }}>
+            <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Scale</div>
+            <select value={scaleName} onChange={e => setScaleName(e.target.value)}
+              style={{ width: "100%", background: "#1a1a2e", border: "1px solid #333", color: "#fff",
+                padding: "4px 6px", borderRadius: 4, fontSize: 12, fontFamily: "inherit" }}>
+              {Object.entries(SCALES).map(([name, data]) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            <div style={{ fontSize: 9, color: scaleColor, marginTop: 3 }}>{scaleData.desc}</div>
+          </div>
+
+          {/* Root selector */}
+          <div style={{ flex: "0 0 auto", background: "#11111e", borderRadius: 8, padding: "8px 12px", border: "1px solid #1e1e36" }}>
+            <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Root</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
+              {NOTE_NAMES.map((n, i) => (
+                <button key={i} onClick={() => setRootSemi(i)}
+                  style={{ padding: "3px 8px", background: rootSemi === i ? "#ffd700" : "#0a0a14",
+                    border: `1px solid ${rootSemi === i ? "#ffd700" : "#333"}`,
+                    color: rootSemi === i ? "#000" : "#888", borderRadius: 3, cursor: "pointer",
+                    fontSize: 10, fontWeight: rootSemi === i ? "bold" : "normal", fontFamily: "inherit" }}>{n}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Tuning + Octave */}
+          <div style={{ flex: "0 0 auto", background: "#11111e", borderRadius: 8, padding: "8px 12px", border: "1px solid #1e1e36" }}>
+            <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Tuning & Octave</div>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <button onClick={() => setTuning("ji")}
+                style={{ padding: "4px 12px", background: tuning === "ji" ? "#22cc66" : "#0a0a14",
+                  border: `1px solid ${tuning === "ji" ? "#22cc66" : "#333"}`,
+                  color: tuning === "ji" ? "#000" : "#888", borderRadius: 4, cursor: "pointer",
+                  fontSize: 11, fontWeight: "bold", fontFamily: "inherit" }}>JI 5-Limit</button>
+              <button onClick={() => setTuning("et")}
+                style={{ padding: "4px 12px", background: tuning === "et" ? "#4488ff" : "#0a0a14",
+                  border: `1px solid ${tuning === "et" ? "#4488ff" : "#333"}`,
+                  color: tuning === "et" ? "#000" : "#888", borderRadius: 4, cursor: "pointer",
+                  fontSize: 11, fontWeight: "bold", fontFamily: "inherit" }}>12-TET</button>
+              <select value={octave} onChange={e => setOctave(Number(e.target.value))}
+                style={{ background: "#1a1a2e", border: "1px solid #333", color: "#aaa", padding: "4px",
+                  borderRadius: 4, fontSize: 11, fontFamily: "inherit" }}>
+                {[2,3,4,5,6].map(o => <option key={o} value={o}>Oct {o}</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Play buttons */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 12, justifyContent: "center" }}>
+          <button onClick={handleAutoPlay}
+            style={{ padding: "6px 20px", background: autoPlay ? "#ff3355" : "#1a1a2e",
+              border: `1px solid ${autoPlay ? "#ff3355" : "#444"}`, color: "#fff", borderRadius: 6,
+              cursor: "pointer", fontSize: 11, letterSpacing: 1, fontFamily: "inherit" }}>
+            {autoPlay ? "■ STOP" : `▶ PLAY ${tuning.toUpperCase()} ASCENDING`}
+          </button>
+          <button onClick={handleCompare}
+            style={{ padding: "6px 20px", background: "#1a1a2e", border: "1px solid #444",
+              color: "#fff", borderRadius: 6, cursor: "pointer", fontSize: 11, letterSpacing: 1, fontFamily: "inherit" }}>
+            🔄 COMPARE JI → ET
+          </button>
+        </div>
+
+        {/* Piano Keyboard */}
+        <div style={{ background: "#0c0c16", borderRadius: 10, padding: "12px 8px", border: "1px solid #1e1e36", marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "center", gap: 3, overflowX: "auto" }}>
+            {noteData.map(nd => (
+              <PianoKey key={nd.absIndex} {...nd} tuning={tuning} scaleColor={scaleColor}
+                isPlaying={playingNote === nd.absIndex}
+                onPlay={() => handlePlayNote(nd)} />
+            ))}
+          </div>
+        </div>
+
+        {/* Info panels row */}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {/* Stability */}
+          <div style={{ flex: "1 1 200px", background: "#11111e", borderRadius: 8, padding: "10px 12px", border: "1px solid #1e1e36" }}>
+            <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+              Multi-Generator Stability (×2,×3,×5,×7,×11)
+            </div>
+            <div style={{ fontSize: 20, fontWeight: "bold",
+              color: stabSummary.avg >= 3.7 ? "#22cc66" : stabSummary.avg >= 3.5 ? "#ffd700" : "#ff5566" }}>
+              {stabSummary.avg.toFixed(2)}/5
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 4 }}>
+              {stabSummary.notes.map((n, i) => (
+                <span key={i} style={{ padding: "2px 6px", borderRadius: 3, fontSize: 10,
+                  background: stabSummary.scores[i] >= 4 ? "#0a2a0a" : stabSummary.scores[i] >= 3 ? "#1a1a0a" : "#2a0a0a",
+                  color: stabSummary.scores[i] >= 4 ? "#22cc66" : stabSummary.scores[i] >= 3 ? "#ffd700" : "#ff5566",
+                  border: "1px solid #222" }}>{n}:{stabSummary.scores[i]}</span>
+              ))}
+            </div>
+          </div>
+
+          {/* Vortex coverage */}
+          <div style={{ flex: "0 0 200px", display: "flex", flexDirection: "column", alignItems: "center",
+            background: "#11111e", borderRadius: 8, padding: "6px", border: "1px solid #1e1e36" }}>
+            <VortexMini scalePositions={vortexPositions} size={140} />
+            <div style={{ fontSize: 9, color: "#666", marginTop: 2 }}>
+              Partitions: {["A","B","C"].map(p => (
+                <span key={p} style={{ color: partCoverage.has(p) ? (p==="A"?"#ff3355":p==="B"?"#22cc66":"#ffd700") : "#333",
+                  fontWeight: partCoverage.has(p) ? "bold" : "normal", marginRight: 4 }}>{p}</span>
+              ))}
+            </div>
+          </div>
+
+          {/* Common with C major */}
+          <div style={{ flex: "1 1 180px", background: "#11111e", borderRadius: 8, padding: "10px 12px", border: "1px solid #1e1e36" }}>
+            <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+              Common with C Major
+            </div>
+            <div style={{ fontSize: 18, fontWeight: "bold", color: "#aaa" }}>
+              {commonWithC.length}/7
+            </div>
+            <div style={{ fontSize: 10, color: "#666", marginTop: 3 }}>
+              {commonWithC.map(n => NOTE_NAMES[n]).join(", ") || "none"}
+            </div>
+          </div>
+        </div>
+
+        {/* Triads */}
+        <div style={{ background: "#11111e", borderRadius: 8, padding: "10px 12px", border: "1px solid #1e1e36", marginBottom: 12 }}>
+          <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+            Diatonic Triads (click to play) · {tuning === "ji" ? "JI 5-Limit" : "12-TET"} · ✅ = zero beating · ❌ = F# tritone beating
+          </div>
+          <TriadPanel scale={scale} rootSemi={rootSemi} tuning={tuning} scaleColor={scaleColor} />
+        </div>
+
+        {/* Interval table */}
+        <div style={{ background: "#11111e", borderRadius: 8, padding: "10px 12px", border: "1px solid #1e1e36" }}>
+          <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+            Interval Detail — {NOTE_NAMES[rootSemi]} {scaleName}
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid #2a2a3a" }}>
+                  {["Degree","Note","JI Hz","ET Hz","Δ cents","JI Ratio","Stab","Part."].map(h => (
+                    <th key={h} style={{ padding: "4px 6px", color: "#888", fontWeight: "normal", textAlign: "left" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {noteData.filter(nd => nd.isInScale && nd.absIndex < 12).map(nd => {
+                  const interval = ((nd.semi - rootSemi) % 12 + 12) % 12;
+                  const ratio = JI5_RATIOS[interval];
+                  const cents = getCentsFromJI(interval);
+                  const dr = JI_DR[interval];
+                  const part = dr ? ([1,2,4,5,7,8].includes(dr) ? "A" : [3,6].includes(dr) ? "B" : "C") : "—";
+                  return (
+                    <tr key={nd.absIndex} style={{ borderBottom: "1px solid #1a1a2a" }}>
+                      <td style={{ padding: "3px 6px", color: scaleColor }}>{nd.degreeName}</td>
+                      <td style={{ padding: "3px 6px", fontWeight: "bold" }}>{nd.note}</td>
+                      <td style={{ padding: "3px 6px", color: "#22cc66" }}>{nd.jiFreq.toFixed(2)}</td>
+                      <td style={{ padding: "3px 6px", color: "#4488ff" }}>{nd.etFreq.toFixed(2)}</td>
+                      <td style={{ padding: "3px 6px", color: Math.abs(cents) > 10 ? "#ff5566" : "#888" }}>
+                        {cents > 0 ? "+" : ""}{cents}¢
+                      </td>
+                      <td style={{ padding: "3px 6px", color: "#aaa" }}>
+                        {ratio === 1 ? "1/1" : ratio.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}
+                      </td>
+                      <td style={{ padding: "3px 6px", color: nd.stability >= 4 ? "#22cc66" : nd.stability >= 3 ? "#ffd700" : "#ff5566" }}>
+                        {nd.stability}/5
+                      </td>
+                      <td style={{ padding: "3px 6px", color: part === "A" ? "#ff3355" : part === "B" ? "#22cc66" : part === "C" ? "#ffd700" : "#555" }}>
+                        {part}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ textAlign: "center", marginTop: 12, fontSize: 8, color: "#333", letterSpacing: 1 }}>
+          SACRIFUNK SCALE EXPLORER · JI 5-Limit from C-Doubling Anchor · Vortex Stability × Spectral Coherence · March 2026
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+const container = document.getElementById('root');
+const root = ReactDOM.createRoot(container);
+root.render(React.createElement(ScaleExplorer));
+  </script>
+</body>
+</html>

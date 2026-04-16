@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cymatics Lab — Sacrifunk Lab</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <style>
+    body { background: #0a0a0f; color: #e8e8f0; margin: 0; font-family: 'Inter', -apple-system, sans-serif; }
+    .lab-nav { background: rgba(10,10,15,0.95); border-bottom: 1px solid #2a2a3a; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(10px); }
+    .lab-nav a { color: #d4a843; text-decoration: none; font-family: 'Jura', sans-serif; font-size: 14px; letter-spacing: 1px; }
+    .lab-nav a:hover { color: #e8c060; }
+    .lab-nav .brand { font-size: 18px; font-weight: 600; letter-spacing: 2px; }
+    #root { min-height: calc(100vh - 50px); }
+  </style>
+  <link href="https://fonts.googleapis.com/css2?family=Jura:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="lab-nav">
+    <a href="https://sacrifunk.com/the-lab/" class="brand">SACRIFUNK LAB</a>
+    <div>
+      <a href="index.html">All Tools</a>
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      <a href="https://sacrifunk.com">sacrifunk.com</a>
+    </div>
+  </nav>
+  <div id="root"></div>
+  <script type="text/babel" data-type="module">
+const { useState, useMemo, useCallback, useRef, useEffect } = React;
+
+
+const JI_PRESETS = [
+  { name: "C", freq: 256, ratio: "1/1" },
+  { name: "D", freq: 288, ratio: "9/8" },
+  { name: "E", freq: 320, ratio: "5/4" },
+  { name: "F", freq: 341.33, ratio: "4/3" },
+  { name: "F#", freq: 360, ratio: "45/32" },
+  { name: "G", freq: 384, ratio: "3/2" },
+  { name: "A", freq: 426.67, ratio: "5/3" },
+  { name: "B", freq: 480, ratio: "15/8" },
+];
+
+const SUB_BASS = [
+  { name: "C2", freq: 64 }, { name: "D2", freq: 72 }, { name: "E2", freq: 80 },
+  { name: "G2", freq: 96 }, { name: "B2", freq: 120 },
+  { name: "C1", freq: 32 }, { name: "E1", freq: 40 }, { name: "G1", freq: 48 },
+];
+
+function computeChladni(size, freq, mode, plateShape) {
+  const data = new Float32Array(size * size);
+  const scale = freq / 50;
+  const m = Math.max(1, Math.round(Math.sqrt(scale)));
+  const n = Math.max(1, Math.round(scale / m));
+  
+  const cx = size / 2, cy = size / 2, r = size / 2 - 2;
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const nx = (x - cx) / r;
+      const ny = (y - cy) / r;
+      
+      if (plateShape === "circle" && nx * nx + ny * ny > 1) {
+        data[y * size + x] = -999;
+        continue;
+      }
+      if (plateShape === "square" && (Math.abs(nx) > 1 || Math.abs(ny) > 1)) {
+        data[y * size + x] = -999;
+        continue;
+      }
+
+      let val;
+      if (mode === "chladni") {
+        val = Math.cos(n * Math.PI * nx) * Math.cos(m * Math.PI * ny)
+            - Math.cos(m * Math.PI * nx) * Math.cos(n * Math.PI * ny);
+      } else if (mode === "drum") {
+        const dist = Math.sqrt(nx * nx + ny * ny);
+        const angle = Math.atan2(ny, nx);
+        const bessApprox = Math.cos(m * angle) * Math.cos(n * Math.PI * dist);
+        val = bessApprox;
+      } else {
+        const k1 = n * 1.2, k2 = m * 0.8;
+        val = Math.sin(k1 * Math.PI * nx) * Math.sin(k2 * Math.PI * ny)
+            + 0.5 * Math.sin(k2 * Math.PI * nx) * Math.sin(k1 * Math.PI * ny);
+      }
+      data[y * size + x] = val;
+    }
+  }
+  return { data, m, n };
+}
+
+function CymaticsCanvas({ freq, plateShape, mode, size = 400, colorScheme }) {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const { data, m, n } = computeChladni(size, freq, mode, plateShape);
+    const imgData = ctx.createImageData(size, size);
+
+    let maxAbs = 0;
+    for (let i = 0; i < data.length; i++) {
+      if (data[i] !== -999) maxAbs = Math.max(maxAbs, Math.abs(data[i]));
+    }
+    if (maxAbs === 0) maxAbs = 1;
+
+    for (let i = 0; i < data.length; i++) {
+      const idx = i * 4;
+      if (data[i] === -999) {
+        imgData.data[idx] = 10; imgData.data[idx+1] = 10;
+        imgData.data[idx+2] = 15; imgData.data[idx+3] = 255;
+        continue;
+      }
+
+      const v = data[i] / maxAbs;
+      const absV = Math.abs(v);
+      const isNodeLine = absV < 0.06;
+
+      if (colorScheme === "sand") {
+        if (isNodeLine) {
+          const bright = 200 + Math.random() * 55;
+          imgData.data[idx] = bright;
+          imgData.data[idx+1] = bright * 0.9;
+          imgData.data[idx+2] = bright * 0.7;
+        } else {
+          const dark = Math.floor(20 + absV * 30);
+          imgData.data[idx] = dark;
+          imgData.data[idx+1] = dark;
+          imgData.data[idx+2] = dark + 5;
+        }
+      } else if (colorScheme === "heat") {
+        const t = (v + 1) / 2;
+        imgData.data[idx] = Math.floor(t * 255);
+        imgData.data[idx+1] = Math.floor(Math.abs(Math.sin(t * Math.PI)) * 100);
+        imgData.data[idx+2] = Math.floor((1 - t) * 255);
+      } else {
+        if (isNodeLine) {
+          imgData.data[idx] = 255; imgData.data[idx+1] = 50;
+          imgData.data[idx+2] = 80;
+        } else {
+          const b = Math.floor(absV * 180);
+          imgData.data[idx] = 10 + b / 4;
+          imgData.data[idx+1] = 10 + b / 3;
+          imgData.data[idx+2] = 20 + b;
+        }
+      }
+      imgData.data[idx+3] = 255;
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+  }, [freq, plateShape, mode, size, colorScheme]);
+
+  return <canvas ref={canvasRef} width={size} height={size}
+    style={{ borderRadius: plateShape === "circle" ? "50%" : 8, border: "2px solid #2a2a4a" }} />;
+}
+
+function CymaticsSimulator() {
+  const [freq, setFreq] = useState(256);
+  const [plateShape, setPlateShape] = useState("square");
+  const [mode, setMode] = useState("chladni");
+  const [colorScheme, setColorScheme] = useState("sand");
+  const [playing, setPlaying] = useState(false);
+  const [activePreset, setActivePreset] = useState("C");
+  const audioRef = useRef(null);
+  const oscRef = useRef(null);
+  const gainRef = useRef(null);
+
+  const startAudio = useCallback(() => {
+    if (oscRef.current) return;
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    audioRef.current = ctx;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.frequency.value = freq;
+    osc.type = "sine";
+    gain.gain.value = 0.15;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    oscRef.current = osc;
+    gainRef.current = gain;
+    setPlaying(true);
+  }, [freq]);
+
+  const stopAudio = useCallback(() => {
+    if (oscRef.current) {
+      oscRef.current.stop();
+      oscRef.current = null;
+      audioRef.current?.close();
+      audioRef.current = null;
+      setPlaying(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (oscRef.current) oscRef.current.frequency.value = freq;
+  }, [freq]);
+
+  useEffect(() => () => { stopAudio(); }, []);
+
+  const modeNum = useMemo(() => {
+    const s = freq / 50;
+    const m = Math.max(1, Math.round(Math.sqrt(s)));
+    const n = Math.max(1, Math.round(s / m));
+    return { m, n };
+  }, [freq]);
+
+  const dr = freq === Math.floor(freq) ? (freq % 9 === 0 ? 9 : freq % 9) : null;
+  const partition = dr ? (dr === 9 ? "C(axis)" : [3,6].includes(dr) ? "B(fifth)" : "A(main)") : "—";
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#08080e", color: "#e0e0f0",
+      fontFamily: "'JetBrains Mono', monospace", padding: "16px" }}>
+      <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+
+      <div style={{ textAlign: "center", marginBottom: 16 }}>
+        <h1 style={{ fontSize: 26, color: "#ff3355", margin: 0, letterSpacing: 2 }}>
+          SACRIFUNK CYMATICS LAB
+        </h1>
+        <p style={{ fontSize: 11, color: "#666688", margin: "4px 0" }}>
+          Chladni Plate Simulation · JI 5-Limit Frequencies · Real Wave Equation Physics
+        </p>
+      </div>
+
+      <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap", maxWidth: 1000, margin: "0 auto" }}>
+        {/* Canvas */}
+        <div style={{ textAlign: "center" }}>
+          <CymaticsCanvas freq={freq} plateShape={plateShape} mode={mode} size={380} colorScheme={colorScheme} />
+          <div style={{ marginTop: 8, fontSize: 12, color: "#888" }}>
+            Mode ({modeNum.m}, {modeNum.n}) · {plateShape} plate · {colorScheme}
+          </div>
+        </div>
+
+        {/* Controls */}
+        <div style={{ flex: "0 0 340px", display: "flex", flexDirection: "column", gap: 10 }}>
+          {/* Frequency */}
+          <div style={{ background: "#12121e", borderRadius: 10, padding: "12px 16px", border: "1px solid #222244" }}>
+            <div style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Frequency</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="range" min={20} max={2000} value={freq}
+                onChange={e => { setFreq(Number(e.target.value)); setActivePreset(""); }}
+                style={{ flex: 1, accentColor: "#ff3355" }} />
+              <input type="number" value={Math.round(freq * 100) / 100} min={20} max={5000}
+                onChange={e => { setFreq(Number(e.target.value)); setActivePreset(""); }}
+                style={{ width: 70, background: "#1a1a2e", border: "1px solid #333", color: "#ff3355",
+                  padding: "4px 8px", borderRadius: 4, fontSize: 16, fontWeight: "bold", textAlign: "center",
+                  fontFamily: "inherit" }} />
+              <span style={{ fontSize: 12, color: "#666" }}>Hz</span>
+            </div>
+            {/* Audio toggle */}
+            <button onClick={playing ? stopAudio : startAudio}
+              style={{ marginTop: 8, width: "100%", padding: "6px", background: playing ? "#ff3355" : "#1a1a2e",
+                border: `1px solid ${playing ? "#ff3355" : "#333"}`, color: "#fff", borderRadius: 6,
+                cursor: "pointer", fontSize: 11, letterSpacing: 1 }}>
+              {playing ? "■ STOP TONE" : "▶ PLAY SINE TONE"}
+            </button>
+          </div>
+
+          {/* JI Presets */}
+          <div style={{ background: "#12121e", borderRadius: 10, padding: "12px 16px", border: "1px solid #222244" }}>
+            <div style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>JI 5-Limit @ C=256</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {JI_PRESETS.map(p => (
+                <button key={p.name} onClick={() => { setFreq(p.freq); setActivePreset(p.name); }}
+                  style={{ padding: "4px 10px", background: activePreset === p.name ? "#ff3355" : "#1a1a2e",
+                    border: `1px solid ${activePreset === p.name ? "#ff3355" : "#333"}`,
+                    color: activePreset === p.name ? "#fff" : "#888", borderRadius: 4, cursor: "pointer",
+                    fontSize: 11, fontFamily: "inherit" }}>
+                  {p.name} <span style={{ fontSize: 9, opacity: 0.6 }}>{p.freq}</span>
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 10, color: "#555", marginTop: 6 }}>Sub-bass:</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 2 }}>
+              {SUB_BASS.map(p => (
+                <button key={p.name} onClick={() => { setFreq(p.freq); setActivePreset(p.name); }}
+                  style={{ padding: "3px 8px", background: activePreset === p.name ? "#22cc66" : "#0a1a0a",
+                    border: `1px solid ${activePreset === p.name ? "#22cc66" : "#223322"}`,
+                    color: activePreset === p.name ? "#fff" : "#4a8a4a", borderRadius: 3, cursor: "pointer",
+                    fontSize: 10, fontFamily: "inherit" }}>
+                  {p.name}={p.freq}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Plate & Mode */}
+          <div style={{ background: "#12121e", borderRadius: 10, padding: "12px 16px", border: "1px solid #222244" }}>
+            <div style={{ display: "flex", gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 10, color: "#666", marginBottom: 4 }}>Plate Shape</div>
+                {["square", "circle"].map(s => (
+                  <button key={s} onClick={() => setPlateShape(s)}
+                    style={{ padding: "3px 10px", marginRight: 4, background: plateShape === s ? "#2a2a5a" : "#0a0a14",
+                      border: `1px solid ${plateShape === s ? "#4444aa" : "#222"}`, color: "#aaa",
+                      borderRadius: 3, cursor: "pointer", fontSize: 10 }}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 10, color: "#666", marginBottom: 4 }}>Pattern</div>
+                {["chladni", "drum", "interference"].map(m => (
+                  <button key={m} onClick={() => setMode(m)}
+                    style={{ padding: "3px 8px", marginRight: 3, background: mode === m ? "#2a2a5a" : "#0a0a14",
+                      border: `1px solid ${mode === m ? "#4444aa" : "#222"}`, color: "#aaa",
+                      borderRadius: 3, cursor: "pointer", fontSize: 10 }}>
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 10, color: "#666", marginBottom: 4 }}>Color</div>
+              {["sand", "heat", "nodeline"].map(c => (
+                <button key={c} onClick={() => setColorScheme(c)}
+                  style={{ padding: "3px 10px", marginRight: 4, background: colorScheme === c ? "#2a2a5a" : "#0a0a14",
+                    border: `1px solid ${colorScheme === c ? "#4444aa" : "#222"}`, color: "#aaa",
+                    borderRadius: 3, cursor: "pointer", fontSize: 10 }}>
+                  {c}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Vortex Info */}
+          <div style={{ background: "#12121e", borderRadius: 10, padding: "12px 16px", border: "1px solid #222244" }}>
+            <div style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Vortex Analysis</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 12 }}>
+              <div>Frequency: <span style={{ color: "#ff3355", fontWeight: "bold" }}>{Math.round(freq*100)/100} Hz</span></div>
+              <div>Digital Root: <span style={{ color: "#ffd700", fontWeight: "bold" }}>{dr || "—"}</span></div>
+              <div>9-Class: <span style={{ color: "#22cc66" }}>{partition}</span></div>
+              <div>Mode: <span style={{ color: "#aaa" }}>({modeNum.m},{modeNum.n})</span></div>
+            </div>
+          </div>
+
+          {/* Info */}
+          <div style={{ fontSize: 10, color: "#444", lineHeight: 1.5, padding: "0 4px" }}>
+            <strong style={{ color: "#666" }}>What you're seeing:</strong> Simulated Chladni plate nodal patterns.
+            Bright lines = where particles accumulate (zero-displacement nodes).
+            Higher frequencies → more complex patterns. This is REAL PHYSICS — 
+            governed by the wave equation ∇²u = -(ω²/c²)u on a bounded domain.
+            Each frequency excites different vibrational modes (m,n).
+            <br /><br />
+            <strong style={{ color: "#666" }}>NOT shown:</strong> Color-from-frequency (invalid). 
+            Chakra mapping (pseudoscience). Solfeggio frequencies (numerology).
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+const container = document.getElementById('root');
+const root = ReactDOM.createRoot(container);
+root.render(React.createElement(CymaticsSimulator));
+  </script>
+</body>
+</html>
