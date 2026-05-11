@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Sacrifunk Vortex Explorer V2 — interactive modular-arithmetic vortex diagram with animated cycles, scale analysis, and Just Intonation overlay." />
+    <meta name="theme-color" content="#08080e" />
+    <title>Vortex Explorer V2 — Sacrifunk Lab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&family=Jura:wght@400;500;600&display=swap" />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #08080e;
+        color: #e0e0f0;
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .lab-nav {
+        background: rgba(10, 10, 15, 0.95);
+        border-bottom: 1px solid #2a2a3a;
+        padding: 12px 24px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        backdrop-filter: blur(10px);
+      }
+      .lab-nav a {
+        color: #d4a843;
+        text-decoration: none;
+        font-family: "Jura", sans-serif;
+        font-size: 14px;
+        letter-spacing: 1px;
+      }
+      .lab-nav a:hover,
+      .lab-nav a:focus-visible {
+        color: #e8c060;
+        outline: 2px solid #d4a843;
+        outline-offset: 2px;
+        border-radius: 2px;
+      }
+      .lab-nav .brand {
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: 2px;
+      }
+      #root {
+        min-height: calc(100vh - 50px);
+      }
+      :focus-visible {
+        outline: 2px solid #d4a843;
+        outline-offset: 2px;
+        border-radius: 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <a href="#main" class="visually-hidden-focusable" style="position: absolute; left: -10000px; top: 16px;" onfocus="this.style.left='16px'; this.style.zIndex='200'; this.style.padding='8px 12px'; this.style.background='#d4a843'; this.style.color='#000'; this.style.fontWeight='600';" onblur="this.style.left='-10000px';">Skip to main content</a>
+    <nav class="lab-nav" aria-label="Sacrifunk Lab navigation">
+      <a href="https://sacrifunk.com/the-lab/" class="brand">SACRIFUNK LAB</a>
+      <div>
+        <a href="index.html">All Tools</a>
+        &nbsp;&nbsp;|&nbsp;&nbsp;
+        <a href="https://sacrifunk.com">sacrifunk.com</a>
+      </div>
+    </nav>
+    <main id="main" tabindex="-1">
+      <div id="root"></div>
+    </main>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

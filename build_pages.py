@@ -1,14 +1,26 @@
 import os, re
 
+# `sacrifunk_vortex_v2` is intentionally excluded from this legacy pipeline.
+# It now ships from `tools/vortex-v2/` as a Vite + TypeScript single-file build
+# emitting directly to `docs/sacrifunk_vortex_v2.html`. The .jsx source is kept
+# in this repo as the canonical theory reference; do NOT re-add it here unless
+# you also remove the Vite build, or the two pipelines will fight for the same
+# output filename.
 TOOLS = [
     ("five_laws_tutorial.jsx", "Five Laws Tutorial", "Learn the fundamental laws of vortex mathematics through interactive lessons"),
     ("sacrifunk_scale_explorer.jsx", "Scale Explorer", "Browse and analyze Sacrifunk's original scales with vortex pattern mapping"),
     ("sacrifunk_vortex_explorer.jsx", "Vortex Explorer", "Explore N-node modular arithmetic cycles and digital root patterns"),
-    ("sacrifunk_vortex_v2.jsx", "Vortex Explorer V2", "Advanced vortex diagram with animated cycles and scale analysis"),
+    # ("sacrifunk_vortex_v2.jsx", "Vortex Explorer V2", "..."),  # → tools/vortex-v2/ (Vite build)
     ("sacrifunk_freq_explorer.jsx", "Frequency Explorer", "Explore Just Intonation ratios, intervals, and harmonic relationships"),
     ("sacrifunk_freq_designer.jsx", "Frequency Designer", "Configure vibroacoustic hardware: RME, MiniDSP, Crown amp, transducers"),
     ("sacrifunk_cymatics_lab.jsx", "Cymatics Lab", "Generate Chladni cymatics patterns and visualize frequency-driven plate vibrations"),
     ("sacrifunk_app.jsx", "Sacrifunk App", "Complete integrated tool: scales, vortex patterns, tutorials, and frequencies"),
+]
+
+# The hub index page below still lists vortex_v2 because the file ships from
+# the Vite build. We rebuild the hub from this static list:
+HUB_TOOLS = TOOLS + [
+    ("sacrifunk_vortex_v2.html", "Vortex Explorer V2", "Advanced vortex diagram with animated cycles and scale analysis · TypeScript / Vite build"),
 ]
 
 HTML_TEMPLATE = '''<!DOCTYPE html>
@@ -119,8 +131,9 @@ INDEX_HTML = '''<!DOCTYPE html>
   <div class="grid">
 '''
 
-for filename, title, desc in TOOLS:
-    html_file = filename.replace('.jsx', '.html')
+for filename, title, desc in HUB_TOOLS:
+    # HUB_TOOLS mixes .jsx (legacy pipeline) and .html (Vite output) entries.
+    html_file = filename.replace('.jsx', '.html') if filename.endswith('.jsx') else filename
     INDEX_HTML += f'''    <a href="{html_file}" class="card">
       <h2>{title}</h2>
       <p>{desc}</p>
